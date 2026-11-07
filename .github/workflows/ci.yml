@@ -18,6 +18,8 @@ jobs:
       - run: uv sync --frozen
       - run: make check
       - run: docker build .
+      # Proves no key sits in an image layer. It needs Docker and no secrets.
+      - run: uv run pytest -m live tests/test_container.py -q
       # The project itself is not on PyPI, so only its locked dependencies are audited. The lock
       # already fixes every version, so the audit resolves nothing.
       - name: Audit the locked dependencies

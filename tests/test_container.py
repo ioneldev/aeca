@@ -14,6 +14,7 @@ import secrets
 import shutil
 import subprocess
 import tarfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -54,7 +55,11 @@ def _test_tag(name: str) -> str:
     return f"aeca-test-{name}:{checkout}"
 
 
+BUILT_TAGS: list[str] = []
+
+
 def _build(context: Path, *, tag: str) -> None:
+    BUILT_TAGS.append(tag)
     built = subprocess.run(
         ["docker", "build", "--tag", tag, str(context)],
         capture_output=True,
@@ -62,6 +67,16 @@ def _build(context: Path, *, tag: str) -> None:
         timeout=BUILD_TIMEOUT_S,
     )
     assert built.returncode == 0, built.stderr[-4000:]
+
+
+# Autouse, so the images go even when a test fails or the build itself did.
+@pytest.fixture(scope="session", autouse=True)
+def remove_built_images() -> Iterator[None]:
+    yield
+    for tag in BUILT_TAGS:
+        subprocess.run(
+            ["docker", "rmi", "--force", tag], capture_output=True, timeout=RUN_TIMEOUT_S
+        )
 
 
 @pytest.fixture(scope="session")
