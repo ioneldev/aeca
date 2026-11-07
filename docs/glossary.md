@@ -4,11 +4,11 @@ Terms as AECA uses them.
 
 **Action**: One step of a plan, with a verb, its args and a key. Verbs: `apply_label`, `archive`, `move_to_spam`, `star`, `send_reply`, `notify_manager`, `request_approval`, `create_event`. A policy record combines verbs; it can't add one.
 
+**AECA headers**: `X-AECA-Kind` and `X-AECA-Id` on every message AECA sends. With Gmail's `SENT` label they identify AECA's own mail ([0027](decisions/0027-approval-ids-and-headers-need-no-state-store.md)).
+
 **Alert**: One email to the manager when something is broken: the cost cap, a refused key, or `ALERT_AFTER_FAILURES` failures in a row. One per incident kind per UTC day.
 
 **Alternatives**: Up to three free slots offered in a drafted reply when no proposed time is free, none was proposed, or the window was vague ([0013](decisions/0013-no-free-slot-drafts-alternatives.md), [0058](decisions/0058-vague-requests-get-alternatives.md)).
-
-**AECA headers**: `X-AECA-Kind` and `X-AECA-Id` on every message AECA sends. With Gmail's `SENT` label they identify AECA's own mail ([0027](decisions/0027-approval-ids-and-headers-need-no-state-store.md)).
 
 **Answer word**: `APPROVE`, `APPROVED`, `REJECT` or `REJECTED`, on the first unquoted line of a reply that starts with one.
 
@@ -18,11 +18,19 @@ Terms as AECA uses them.
 
 **Audit line**: One JSON line in `audit.jsonl` per processed email, and one per approval outcome. No bodies.
 
+**Copy id**: A random id kept in `copy-id` in the data volume. It names one installation, so a restart retakes its own lock at once ([0065](decisions/0065-the-copy-id-is-persisted-in-the-data-dir.md)).
+
+**Copy lock**: The Gmail draft titled `AECA lock`. It says which copy of AECA is running on the inbox, by copy id and heartbeat. A courtesy: derived ids are the guarantee ([0039](decisions/0039-the-lock-is-a-courtesy.md)).
+
 **Decision**: What the model returns for one email: label, urgent with a quote, finance, meeting windows, reply kind, urgent draft, summary, suspected injection. Code validates it.
 
 **Derived id**: An id computed from the source message id, so a fresh state store can never reuse one: the approval id, the event id, the action keys.
 
+**Dry run**: What `make reset-test` does without `ARGS=--yes`: it prints the plan and changes nothing.
+
 **Facts**: What code extracts from an email before any model call: sender, DMARC, bulk and automated signs, links, attachments, bounded text.
+
+**Heartbeat**: The time of the last successful poll. It is written to the copy lock and to a file in the data volume, and stale after 3 × `POLL_SECONDS`.
 
 **Hold**: A slot in an unanswered approval, or one of the alternatives offered to a requester. Keyed by thread. Other threads see it as busy.
 

@@ -48,7 +48,21 @@ If your own consent screen is in Testing mode, tokens last 7 days. Run `make aut
 | `make approvals` | Lists the approvals the manager hasn't answered. |
 | `make check` | Lint, strict typing and the offline tests. No network, no cost. |
 
-<!-- Task 15: health check (`aeca health`, Docker's HEALTHCHECK), the copy lock and FORCE_LOCK -->
+### Health and the copy lock
+
+**Health.** `aeca health` exits 0 when AECA's last successful poll is less than 3 × `POLL_SECONDS` old, and exits 1 with one line saying why otherwise. It reads only a heartbeat file in the data volume, so it needs no credential and no network. The image's Docker `HEALTHCHECK` runs it every 30 seconds, with a 60-second start period. `docker compose ps` shows the result.
+
+**Stopping.** `make stop` sends SIGTERM. AECA finishes the email in hand, then exits. Compose waits up to 120 seconds.
+
+**The copy lock.** Two copies on one inbox would do the work twice, so a running copy holds a lock in the Google account itself: a Gmail draft titled `AECA lock`. AECA never sends it.
+- The copy renews the lock's heartbeat on every poll, and between emails when a poll runs long.
+- A heartbeat is stale after 3 × `POLL_SECONDS`. A copy that starts while another copy's heartbeat is fresh exits with a configuration error and sends nothing. Wait out the stale time, stop the other copy, or set `FORCE_LOCK=true`.
+- The copy's id is kept in the data volume (`copy-id`), so a restart of the same installation takes its own lock back at once. Another machine has another volume, so another id. A wiped volume is a new copy, which waits out the stale time.
+- If several lock drafts exist, the one with the lowest draft id is the lock.
+- A copy that finds it no longer holds the lock stops with exit 1. Docker restarts it, and it exits with a configuration error for as long as the other copy holds the lock.
+- The lock is a courtesy. The ids AECA derives from Gmail message ids are what stop duplicate work ([0039](docs/decisions/0039-the-lock-is-a-courtesy.md)).
+
+Limits of the lock are in [docs/limitations.md](docs/limitations.md).
 
 ### `.env`
 
@@ -72,10 +86,10 @@ Each setting is an environment variable. A blank value means the default.
 | `SALES_DECLINE_NEEDS_APPROVAL` | false | Makes the sales decline wait for approval. |
 | `MAX_USD_PER_DAY` | 5 | The daily cost cap. |
 | `ALERT_AFTER_FAILURES` | 3 | How many emails in a row must fail before AECA alerts the manager. |
-| `DEBUG_LOG` | false | Writes `debug.log` with full email text. It is personal data, so it is off. |
-| `DEBUG_LOG_DAYS` | 7 | How long `debug.log` is kept, when it is on. |
+| `DEBUG_LOG` | false | Switches the debug log on. It holds full email text, which is personal data, so it is off. |
+| `DEBUG_LOG_DAYS` | 7 | How many days of debug log files are kept. |
 | `EXTRA_CA_CERTS` | empty | A path inside the container to a CA file to trust. See below. |
-| `FORCE_LOCK` | false | Starts AECA even when another copy seems to hold the lock. <!-- Task 15 --> |
+| `FORCE_LOCK` | false | Takes the copy lock even when another copy's heartbeat is fresh. Use it only after stopping the other copy. |
 | `REHEARSAL_INTERNAL_SENDER`, `REHEARSAL_EXTERNAL_SENDER` | empty | Only for `make rehearse` (Ionel's rehearsal, not yours). |
 
 The secrets reach the container only at run time, through Compose's `env_file`. They are in no image layer, and a test checks that.
@@ -134,9 +148,9 @@ Reply in that thread. Write `APPROVE` or `REJECT` as the first word, above any q
 
 `make audit` prints `audit.jsonl`, one line per processed email and one per approval outcome. A line holds the time, message and thread ids, sender and subject (bounded), the label, whether it is urgent, what decided it (a rule or the model), the actions with their status, the approval and its state, the outcome (`done`, `awaiting_approval` or `failed`), and the tokens and cost. It never holds a body.
 
-`make logs` follows the same emails as one JSON line each. The files live in the `aeca-data` volume: `audit.jsonl`, `trace.jsonl` (every model call, Google call and retry), and `debug.log` when `DEBUG_LOG` is on. API keys and tokens are redacted before anything is written.
+`make logs` follows the same emails as one JSON line each. The files live in the `aeca-data` volume: `audit.jsonl`, `trace.jsonl` (every model call, Google call and retry), and the debug log (below). API keys and tokens are redacted before anything is written.
 
-<!-- Task 15: where the debug log is and how to read it -->
+**The debug log.** With `DEBUG_LOG=true`, AECA writes `debug-YYYY-MM-DD.log` (the UTC day) in the same volume. It is off by default because it holds personal data: secrets are redacted, email content is not. For each email the model decides, it holds the email text exactly as the model sees it (headed `email <message id> as the model sees it:`) and each raw model reply, usable or not (headed `reply to <message id>, attempt <n>:`). An email that a rule decides alone writes nothing. Each file rotates at 10 MB, keeping 5, and files older than `DEBUG_LOG_DAYS` days are deleted when a new day's file is opened. Read one with `docker compose exec aeca sh -c 'tail -n 50 /data/debug-*.log'`.
 
 ## What AECA leaves alone
 
@@ -166,7 +180,24 @@ AECA sends the inbox's contents to Anthropic. It reads its secrets from `.env`. 
 
 `make check` runs lint, strict typing and the offline suite. `make eval` and `make rehearse` use the network and cost money, so they stay out of `make check`. `make eval` decides every email of a 35-email corpus for real and reports accuracy per label: 100% on every label at the last run, for about $0.20. The runs are recorded in [0002](docs/decisions/0002-first-live-run.md) and [0003](docs/decisions/0003-first-send-rehearsal.md).
 
-<!-- Task 17: make reset-test, and the rehearsal's cleanup -->
+## Ionel's rehearsal tools
+
+These are for Ionel's own checkout, not for you. `make rehearse` sends the corpus through Mail.app from the two `REHEARSAL_*` addresses. `make reset-test` cleans up after it.
+
+`make reset-test` refuses when `REHEARSAL_INTERNAL_SENDER` or `REHEARSAL_EXTERNAL_SENDER` is empty, as the table above leaves them. Run as it comes, it prints a dry run and changes nothing. `make reset-test ARGS=--yes` applies the plan.
+- **What it matches**, one message at a time, never a thread:
+  - R1: a single `From` equal to a rehearsal address, with `dmarc=pass`.
+  - R2: AECA's own mail, with every recipient a rehearsal address.
+  - R3: AECA's own mail with an approval id derived from a rehearsal email.
+  - R4: a hand reply whose `In-Reply-To` or `References` names a rehearsal approval request.
+  - E1: events tagged by `make seed-calendar`, the whole series.
+  - E2: events under ids AECA derived from a rehearsal email.
+- **What it writes:** `messages.trash` and `events.delete`, which cancels an event. Never threads, drafts, labels or the lock.
+- **When it refuses:** while any `AECA lock` draft has a heartbeat younger than the larger of 3 × `POLL_SECONDS` and 10 minutes, dated in the future, or unreadable, and when the drafts can't be listed. It ignores `FORCE_LOCK`. Run `make stop`, wait 10 minutes, and run it again.
+- **Its output** lists each item with its rule, the totals per rule, and a "left alone" summary by sender: what the rules didn't match, and how much of it sits in the Inbox unprocessed. A draft that a rule matches is listed and never trashed. Check that summary before `--yes`.
+- **Re-seeding:** `make seed-calendar` after a reset brings the cancelled seed events back, each with its own status.
+
+Why these rules: [0061](docs/decisions/0061-what-reset-test-treats-as-the-rehearsals.md), [0062](docs/decisions/0062-reset-tests-own-lock-check.md), [0063](docs/decisions/0063-a-reseed-restores-cancelled-seed-events.md). The limits are in [docs/limitations.md](docs/limitations.md).
 
 | Page | What |
 |---|---|

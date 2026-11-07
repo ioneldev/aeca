@@ -53,3 +53,8 @@ One record per decision in the spec, per deviation the plan made on 2026-11-07, 
 - [0058: A vague meeting request gets alternatives, not a booked time](0058-vague-requests-get-alternatives.md), Ionel decided that a vague request gets alternatives (2026-11-07), and Claude chose the 12-hour limit that implements it
 - [0059: An urgent meeting request gets one reply, the meeting reply](0059-an-urgent-meeting-gets-one-reply.md), Ionel found the problem, and Claude chose the fix. Changes 0016 in part
 - [0060: The urgent draft goes out as the manager read it](0060-the-urgent-draft-goes-out-as-written.md), Ionel found the problem, and Claude chose the fix. Changes 0022 in part
+- [0061: What reset-test treats as the rehearsal's](0061-what-reset-test-treats-as-the-rehearsals.md), Claude; the cases come from the `tech-lead` agent
+- [0062: reset-test has its own lock check](0062-reset-tests-own-lock-check.md), Claude
+- [0063: A re-seed restores cancelled seed events](0063-a-reseed-restores-cancelled-seed-events.md), Claude
+- [0064: The handover ends with a reset dry run](0064-the-handover-ends-with-a-reset-dry-run.md), Claude. Departs from spec §5's order
+- [0065: The copy id is persisted in the data dir](0065-the-copy-id-is-persisted-in-the-data-dir.md), Claude
