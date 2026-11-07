@@ -31,18 +31,19 @@ auth:
 	@docker image inspect $(IMAGE) >/dev/null 2>&1 || docker compose build
 	docker compose run --rm --service-ports auth
 
-# Test tools. Each checks .env first, then runs with its values; none starts Docker.
+# Test tools. Each checks .env first, then runs with its values; none starts Docker. They run on
+# the host, so their files go to ./data, which git ignores, not to the container's /data.
 #   make eval           PAID: decides every corpus email for real, and reports accuracy and cost
 #   make seed-calendar  fills next week of the real calendar with events tagged [AECA test]
 #   make rehearse       sends the deliverable corpus emails from the two rehearsal accounts
 eval:
 	@$(PREFLIGHT) env-run
-	uv run --env-file .env aeca eval
+	AECA_DATA_DIR=data uv run --env-file .env aeca eval
 
 seed-calendar:
 	@$(PREFLIGHT) env-run
-	uv run --env-file .env aeca seed-calendar
+	AECA_DATA_DIR=data uv run --env-file .env aeca seed-calendar
 
 rehearse:
 	@$(PREFLIGHT) env-run
-	uv run --env-file .env aeca rehearse
+	AECA_DATA_DIR=data uv run --env-file .env aeca rehearse

@@ -5,7 +5,8 @@ They print what they did by id and count, never an email's contents.
 
 import argparse
 import os
-from datetime import datetime
+from collections.abc import Mapping
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -21,13 +22,22 @@ from aeca.application.decide import DecideDeps, decide
 from aeca.domain.errors import ConfigError
 from aeca.domain.secret import SecretStr
 from aeca.settings import Settings, load_settings, require_rehearsal_accounts
-from aeca.tools.corpus import load_corpus
-from aeca.tools.evaluate import evaluate, format_report, write_report
+from aeca.tools.corpus import corpus_message_id, load_corpus
+from aeca.tools.evaluate import (
+    EvalReport,
+    EvalStopped,
+    ProgressLog,
+    evaluate,
+    format_report,
+    write_report,
+)
 from aeca.tools.rehearse import SmtpSender, rehearse
 from aeca.tools.seed_calendar import SeedWeek, next_monday, seed_calendar
 
 DEFAULT_CORPUS = Path("tests/corpus/emails.json")
 TRACE_ROTATION = Rotation(max_bytes=5_000_000, keep=3)
+DATA_DIR_VARIABLE = "AECA_DATA_DIR"
+LOCAL_DATA_DIR = Path("data")
 
 
 def add_tool_commands(subparsers: Any) -> None:
@@ -36,6 +46,12 @@ def add_tool_commands(subparsers: Any) -> None:
     evaluation.add_argument("--out", type=Path, help="where to write the JSON report")
     evaluation.set_defaults(handler=_eval)
     seeding = subparsers.add_parser("seed-calendar", help="fill a test week in the real calendar")
+    seeding.add_argument(
+        "--week-start",
+        type=date.fromisoformat,
+        metavar="YYYY-MM-DD",
+        help="the Monday that starts the week (default: next Monday)",
+    )
     seeding.set_defaults(handler=_seed_calendar)
     rehearsal = subparsers.add_parser("rehearse", help="send the corpus as real mail")
     _add_corpus_option(rehearsal)
@@ -46,19 +62,40 @@ def _add_corpus_option(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
 
 
+def tool_data_dir(environ: Mapping[str, str], settings: Settings) -> Path:
+    """The tools run on the host, where the container's /data does not exist."""
+    return settings.data_dir if environ.get(DATA_DIR_VARIABLE, "").strip() else LOCAL_DATA_DIR
+
+
 def _eval(arguments: argparse.Namespace) -> int:
     settings = load_settings(os.environ, purpose="tools")
     corpus = load_corpus(arguments.corpus)
-    data_dir = _writable_directory(settings.data_dir)
+    data_dir = _writable_directory(tool_data_dir(os.environ, settings))
     clock = SystemClock()
     budget = Budget(settings.max_usd_per_day)
-    deps = _decide_deps(settings, data_dir=data_dir, clock=clock, budget=budget)
-    report = evaluate(corpus, lambda facts: decide(facts, deps), budget=budget, clock=clock)
     path = arguments.out or data_dir / f"eval-{_utc_stamp(clock.now())}.json"
+    progress = ProgressLog(path.with_suffix(".progress.jsonl"))
+    deps = _decide_deps(settings, data_dir=data_dir, clock=clock, budget=budget)
+    try:
+        report = evaluate(
+            corpus,
+            lambda facts: decide(facts, deps),
+            budget=budget,
+            clock=clock,
+            on_decided=progress,
+        )
+    except EvalStopped as stopped:
+        _publish(stopped.report, path)
+        raise
+    progress.discard()
+    _publish(report, path)
+    return 0
+
+
+def _publish(report: EvalReport, path: Path) -> None:
     write_report(report, path)
     print(format_report(report))
     print(f"\nreport written to {path}")
-    return 0
 
 
 def _decide_deps(
@@ -122,14 +159,23 @@ def _utc_stamp(moment: datetime) -> str:
     return moment.strftime("%Y%m%dT%H%M%SZ")
 
 
-def _seed_calendar(_arguments: argparse.Namespace) -> int:
+def _seed_calendar(arguments: argparse.Namespace) -> int:
     settings = load_settings(os.environ, purpose="tools")
+    requested: date | None = arguments.week_start
+    if requested is not None and requested.weekday() != 0:
+        raise ConfigError(
+            f"--week-start {requested} is not a Monday.",
+            next_action="Give the Monday that starts the week, as YYYY-MM-DD.",
+        )
     services = build_google_services(settings)
     zone = ZoneInfo(services.calendar.time_zone())
-    week_start = next_monday(SystemClock().now(), zone)
-    ids = seed_calendar(services.seed_calendar, SeedWeek(week_start=week_start, zone=zone))
-    print(f"Seeded {len(ids)} events for the week of {week_start} ({zone.key}).")
-    print("event ids: " + ", ".join(ids))
+    week_start = requested or next_monday(SystemClock().now(), zone)
+    report = seed_calendar(services.seed_calendar, SeedWeek(week_start=week_start, zone=zone))
+    print(
+        f"Week of {week_start} ({zone.key}): created {len(report.created)} events, "
+        f"skipped {len(report.skipped)} already there."
+    )
+    print("created event ids: " + (", ".join(report.created) or "none"))
     return 0
 
 
@@ -138,7 +184,10 @@ def _rehearse(arguments: argparse.Namespace) -> int:
     accounts = require_rehearsal_accounts(settings)
     corpus = load_corpus(arguments.corpus)
     sender = SmtpSender(accounts, recipient=settings.gmail_address)
-    sent = rehearse(corpus, sender)
+    sent = rehearse(corpus, sender, on_sent=_announce_sent)
     print(f"Sent {len(sent)} of {len(corpus)} corpus emails to {settings.gmail_address}.")
-    print("message ids: " + ", ".join(f"<corpus-{email_id}@aeca.test>" for email_id in sent))
     return 0
+
+
+def _announce_sent(email_id: str) -> None:
+    print(f"sent {corpus_message_id(email_id)}", flush=True)

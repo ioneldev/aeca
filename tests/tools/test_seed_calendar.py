@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -33,12 +34,42 @@ def test_seeded_events_are_tagged() -> None:
         assert event.summary.startswith("[AECA test]")
 
 
-def test_seeding_returns_the_id_of_every_event_it_created() -> None:
+def test_seeding_reports_the_ids_it_created() -> None:
     calendar = MemorySeedCalendar()
 
-    ids = seed_calendar(calendar, SeedWeek(week_start=MONDAY, zone=BUCHAREST))
+    report = seed_calendar(calendar, SeedWeek(week_start=MONDAY, zone=BUCHAREST))
 
-    assert ids == [f"event-{n}" for n in range(1, len(calendar.events) + 1)]
+    assert report.created == [event.event_id for event in calendar.events]
+    assert report.skipped == []
+
+
+def test_seeding_twice_creates_nothing_the_second_time() -> None:
+    calendar = MemorySeedCalendar()
+    week = SeedWeek(week_start=MONDAY, zone=BUCHAREST)
+    first = seed_calendar(calendar, week)
+
+    second = seed_calendar(calendar, week)
+
+    assert second.created == [] and second.skipped == first.created
+    assert len(calendar.events) == len(first.created)
+
+
+def test_a_different_week_gets_different_ids() -> None:
+    calendar = MemorySeedCalendar()
+    seed_calendar(calendar, SeedWeek(week_start=MONDAY, zone=BUCHAREST))
+
+    later = seed_calendar(calendar, SeedWeek(week_start=date(2026, 11, 16), zone=BUCHAREST))
+
+    assert later.skipped == []
+
+
+def test_event_ids_are_valid_google_ids_and_unique() -> None:
+    ids = [event.event_id for event in seed().events]
+
+    assert len(set(ids)) == len(ids)
+    for event_id in ids:
+        assert re.fullmatch(r"[0-9a-v]{5,1024}", event_id)
+        assert event_id.startswith("aecaseed")
 
 
 def test_every_working_day_has_a_focus_block_from_ten_to_eleven() -> None:

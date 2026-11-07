@@ -26,6 +26,11 @@ REHEARSAL_HEADER = "X-AECA-Test"
 REHEARSAL_MARKER = "rehearsal"
 AUTHENTICATION_RESULTS = "Authentication-Results"
 GMAIL_SERVER = "mx.google.com"
+# Headers that would change who receives the message, or what it is, so a corpus entry may not set
+# them: the recipient is always the account under test.
+RESERVED_HEADERS = frozenset(
+    {"to", "cc", "bcc", "from", "message-id", "subject", "in-reply-to", "references"}
+)
 REPLY_PREFIX = "Re: "
 
 
@@ -171,6 +176,9 @@ def _structural_problem(corpus: tuple[CorpusEmail, ...]) -> str | None:
     for email in corpus:
         if email.id in seen:
             return f"the id {email.id!r} appears twice"
+        reserved = sorted(name for name in email.headers if name.lower() in RESERVED_HEADERS)
+        if reserved:
+            return f"{email.id!r} sets the reserved header {reserved[0]!r}"
         if email.follows is not None and email.follows not in seen:
             return f"{email.id!r} follows {email.follows!r}, which is not an earlier email"
         seen.add(email.id)

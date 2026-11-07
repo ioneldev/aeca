@@ -25,12 +25,16 @@ class FakeSmtpConnection:
 class FakeSmtp:
     """Hands out one connection per connect(), like smtplib would."""
 
-    def __init__(self, failure: Exception | None = None) -> None:
+    def __init__(
+        self, failure: Exception | None = None, *, fail_on_connection: int | None = None
+    ) -> None:
         self.connections: list[FakeSmtpConnection] = []
         self._failure = failure
+        self._fail_on_connection = fail_on_connection
 
     def connect(self) -> FakeSmtpConnection:
-        connection = FakeSmtpConnection(self._failure)
+        fails = len(self.connections) + 1 == self._fail_on_connection
+        connection = FakeSmtpConnection(OSError("connection reset") if fails else self._failure)
         self.connections.append(connection)
         return connection
 

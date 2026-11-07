@@ -67,6 +67,7 @@ def rehearse(
     sender: SmtpSender,
     *,
     sleep: Callable[[float], None] = time.sleep,
+    on_sent: Callable[[str], None] = lambda _email_id: None,
 ) -> list[str]:
     """Ids of the emails sent, in corpus order. Gmail would filter the undeliverable ones, so
     sending them would only test Gmail."""
@@ -75,9 +76,20 @@ def rehearse(
     for email in (email for email in corpus if email.deliverable):
         if sent:
             sleep(SECONDS_BETWEEN_EMAILS)
-        sender.send(email, parent=by_id.get(email.follows) if email.follows else None)
+        try:
+            sender.send(email, parent=by_id.get(email.follows) if email.follows else None)
+        except RehearsalSendError as refused:
+            raise _with_delivered(refused, sent) from refused
         sent.append(email.id)
+        on_sent(email.id)
     return sent
+
+
+def _with_delivered(refused: RehearsalSendError, sent: list[str]) -> RehearsalSendError:
+    delivered = ", ".join(sent) or "none"
+    return RehearsalSendError(
+        f"{refused} Delivered before it: {delivered}.", next_action=refused.next_action
+    )
 
 
 def _refused(email: CorpusEmail, account: MailAccount, error: Exception) -> RehearsalSendError:
@@ -85,6 +97,6 @@ def _refused(email: CorpusEmail, account: MailAccount, error: Exception) -> Rehe
         f"Gmail refused {email.id!r} from {account.address}: {type(error).__name__}.",
         next_action=(
             "Check that the account has 2-Step Verification and that its app password in .env is "
-            "current. Emails before this one were already delivered."
+            "current. The ids delivered before it are in the message."
         ),
     )

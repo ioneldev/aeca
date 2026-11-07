@@ -1,14 +1,15 @@
 """Seeds test events through the Calendar API, which the Calendar port cannot express: recurrence,
 all-day events, status and extended properties.
 
-SeedEvent lives here, not under aeca.tools, because nothing outside the tools may import them."""
+SeedEvent lives here, not under aeca.tools, because no domain, application or adapter code may
+import the tools."""
 
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Literal
 
 from aeca.adapters.google_calendar import CALENDAR_ID
-from aeca.adapters.google_errors import execute
+from aeca.adapters.google_errors import execute_unless_missing
 
 
 @dataclass(frozen=True)
@@ -18,9 +19,20 @@ class SeedEvent:
     end: datetime | date
     zone: str
     private_properties: dict[str, str]
+    # Google refuses an id it already holds, which is what makes seeding twice harmless.
+    event_id: str
     recurrence: tuple[str, ...] = ()
     status: Literal["confirmed", "tentative"] = "confirmed"
     declined_by_me: bool = False
+
+
+@dataclass(frozen=True)
+class SeedInsert:
+    event_id: str
+    created: bool
+
+
+ALREADY_EXISTS = 409
 
 
 class GoogleSeedCalendar:
@@ -28,14 +40,16 @@ class GoogleSeedCalendar:
         self._events = service.events()
         self._account_address = account_address
 
-    def insert(self, event: SeedEvent) -> str:
-        reply = execute(
-            self._events.insert(calendarId=CALENDAR_ID, body=self._body(event), sendUpdates="none")
+    def insert(self, event: SeedEvent) -> SeedInsert:
+        reply = execute_unless_missing(
+            self._events.insert(calendarId=CALENDAR_ID, body=self._body(event), sendUpdates="none"),
+            missing_statuses=(ALREADY_EXISTS,),
         )
-        return str(reply["id"])
+        return SeedInsert(event_id=event.event_id, created=reply is not None)
 
     def _body(self, event: SeedEvent) -> dict[str, Any]:
         body: dict[str, Any] = {
+            "id": event.event_id,
             "summary": event.summary,
             "start": _moment(event.start, event.zone),
             "end": _moment(event.end, event.zone),

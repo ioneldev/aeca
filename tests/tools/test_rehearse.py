@@ -119,3 +119,24 @@ def test_a_refused_login_stops_the_run_and_never_shows_the_password() -> None:
     assert "internal-app-password-1" not in str(raised.value)
     assert "insider@gmail.test" in str(raised.value) and raised.value.next_action
     assert all(connection.closed for connection in smtp.connections)
+
+
+def test_each_id_is_reported_as_it_is_sent() -> None:
+    corpus = (make_corpus_email(id="a"), make_corpus_email(id="b"))
+    reported: list[str] = []
+
+    rehearse(corpus, sender_over(FakeSmtp()), sleep=lambda _: None, on_sent=reported.append)
+
+    assert reported == ["a", "b"]
+
+
+def test_a_failure_names_the_emails_already_delivered() -> None:
+    smtp = FakeSmtp(fail_on_connection=2)
+    corpus = tuple(make_corpus_email(id=name) for name in ("a", "b", "c"))
+
+    with pytest.raises(AecaError) as raised:
+        rehearse(corpus, sender_over(smtp), sleep=lambda _: None)
+
+    message = str(raised.value)
+    assert "'b'" in message and "Delivered before it: a" in message
+    assert raised.value.next_action

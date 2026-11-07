@@ -6,10 +6,9 @@ from fakes.fixed_clock import FIXED_NOW
 from support.corpus import make_corpus_email
 
 from aeca.domain.errors import ConfigError
-from aeca.domain.facts import FactSettings, extract_facts
+from aeca.domain.facts import extract_facts
 from aeca.domain.labels import Label
 from aeca.tools.corpus import (
-    EVAL_ACCOUNT_ADDRESS,
     EVAL_EXTERNAL_SENDER,
     EVAL_INTERNAL_SENDER,
     CorpusEmail,
@@ -17,13 +16,9 @@ from aeca.tools.corpus import (
     to_mime,
     to_raw,
 )
+from aeca.tools.evaluate import EVAL_FACT_SETTINGS
 
 CORPUS_PATH = Path(__file__).resolve().parents[1] / "corpus" / "emails.json"
-EVAL_FACT_SETTINGS = FactSettings(
-    account_address=EVAL_ACCOUNT_ADDRESS,
-    internal_senders=frozenset({EVAL_INTERNAL_SENDER}),
-    bulk_senders=frozenset(),
-)
 
 
 def facts_of(email: CorpusEmail, sender: str = EVAL_EXTERNAL_SENDER):  # type: ignore[no-untyped-def]
@@ -187,3 +182,19 @@ def test_mime_does_not_double_the_reply_prefix() -> None:
     message = to_mime(reply, "s@gmail.test", recipient="a@gmail.test", parent=parent)
 
     assert message["Subject"] == "RE: price list - thanks"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["To", "cc", "BCC", "From", "message-id", "SUBJECT", "In-Reply-To", "references"],
+)
+def test_a_corpus_header_may_not_redirect_or_rewrite_the_message(tmp_path: Path, name: str) -> None:
+    sneaky = make_corpus_email(headers={name: "x@elsewhere.test"}).model_dump(mode="json")
+    path = write_corpus(tmp_path / "c.json", json.dumps([sneaky]))
+
+    with pytest.raises(ConfigError, match=rf"(?i){name}"):
+        load_corpus(path)
+
+
+def test_the_shipped_corpus_has_no_reserved_headers() -> None:
+    assert load_corpus(CORPUS_PATH)
