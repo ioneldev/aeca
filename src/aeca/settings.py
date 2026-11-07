@@ -37,6 +37,22 @@ class Settings:
     extra_ca_certs: Path | None
     force_lock: bool
     data_dir: Path
+    rehearsal_internal_sender: str | None
+    rehearsal_internal_app_password: SecretStr | None
+    rehearsal_external_sender: str | None
+    rehearsal_external_app_password: SecretStr | None
+
+
+@dataclass(frozen=True)
+class MailAccount:
+    address: str
+    app_password: SecretStr
+
+
+@dataclass(frozen=True)
+class RehearsalAccounts:
+    internal: MailAccount
+    external: MailAccount
 
 
 def load_settings(environ: Mapping[str, str], *, purpose: Purpose) -> Settings:
@@ -66,6 +82,47 @@ def load_settings(environ: Mapping[str, str], *, purpose: Purpose) -> Settings:
         extra_ca_certs=reader.path("EXTRA_CA_CERTS"),
         force_lock=reader.boolean("FORCE_LOCK"),
         data_dir=reader.path("AECA_DATA_DIR") or Path("/data"),
+        rehearsal_internal_sender=reader.text("REHEARSAL_INTERNAL_SENDER"),
+        rehearsal_internal_app_password=reader.secret(
+            "REHEARSAL_INTERNAL_APP_PASSWORD", required=False
+        ),
+        rehearsal_external_sender=reader.text("REHEARSAL_EXTERNAL_SENDER"),
+        rehearsal_external_app_password=reader.secret(
+            "REHEARSAL_EXTERNAL_APP_PASSWORD", required=False
+        ),
+    )
+
+
+def require_rehearsal_accounts(settings: Settings) -> RehearsalAccounts:
+    """Only `rehearse` needs the two test accounts, so only it asks for them."""
+    internal = _account(
+        settings.rehearsal_internal_sender, settings.rehearsal_internal_app_password
+    )
+    external = _account(
+        settings.rehearsal_external_sender, settings.rehearsal_external_app_password
+    )
+    if internal is None or external is None:
+        raise _missing_rehearsal_settings(settings)
+    return RehearsalAccounts(internal=internal, external=external)
+
+
+def _account(address: str | None, app_password: SecretStr | None) -> MailAccount | None:
+    if address is None or app_password is None:
+        return None
+    return MailAccount(address=address, app_password=app_password)
+
+
+def _missing_rehearsal_settings(settings: Settings) -> ConfigError:
+    values = {
+        "REHEARSAL_INTERNAL_SENDER": settings.rehearsal_internal_sender,
+        "REHEARSAL_INTERNAL_APP_PASSWORD": settings.rehearsal_internal_app_password,
+        "REHEARSAL_EXTERNAL_SENDER": settings.rehearsal_external_sender,
+        "REHEARSAL_EXTERNAL_APP_PASSWORD": settings.rehearsal_external_app_password,
+    }
+    missing = ", ".join(name for name, value in values.items() if value is None)
+    return ConfigError(
+        f"make rehearse needs these settings, and they are not set: {missing}.",
+        next_action="Set them in .env (see .env.example), then run again.",
     )
 
 

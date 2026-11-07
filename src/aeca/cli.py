@@ -8,6 +8,7 @@ from aeca.adapters.env_file import set_env_value
 from aeca.adapters.google_auth import ConsentRequest, run_consent
 from aeca.domain.errors import AecaError
 from aeca.settings import load_settings
+from aeca.tools.tool_commands import add_tool_commands
 
 REFRESH_TOKEN_VARIABLE = "GOOGLE_REFRESH_TOKEN"
 
@@ -32,6 +33,7 @@ def _parser() -> argparse.ArgumentParser:
     auth.add_argument("--bind", default="127.0.0.1")
     auth.add_argument("--port", type=int, default=8765)
     auth.set_defaults(handler=_auth)
+    add_tool_commands(commands)
     return parser
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from aeca.domain.errors import AecaError, ConfigError
-from aeca.settings import load_settings
+from aeca.settings import load_settings, require_rehearsal_accounts
 
 
 def test_a_missing_variable_is_named() -> None:
@@ -106,3 +106,37 @@ def test_settings_repr_shows_no_secret(minimal_run_env: dict[str, str]) -> None:
     assert minimal_run_env["ANTHROPIC_API_KEY"] not in shown
     assert minimal_run_env["GOOGLE_CLIENT_SECRET"] not in shown
     assert minimal_run_env["GOOGLE_REFRESH_TOKEN"] not in shown
+
+
+def test_rehearsal_settings_are_optional(minimal_run_env: dict[str, str]) -> None:
+    s = load_settings(minimal_run_env, purpose="tools")
+
+    assert s.rehearsal_internal_sender is None and s.rehearsal_external_app_password is None
+
+
+def test_rehearsal_accounts_are_read_with_masked_passwords(minimal_run_env: dict[str, str]) -> None:
+    env = minimal_run_env | {
+        "REHEARSAL_INTERNAL_SENDER": "in@gmail.test",
+        "REHEARSAL_INTERNAL_APP_PASSWORD": "abcd efgh ijkl mnop",
+        "REHEARSAL_EXTERNAL_SENDER": "out@gmail.test",
+        "REHEARSAL_EXTERNAL_APP_PASSWORD": "qrst uvwx yzab cdef",
+    }
+
+    accounts = require_rehearsal_accounts(load_settings(env, purpose="tools"))
+
+    assert accounts.internal.address == "in@gmail.test"
+    assert accounts.external.app_password.reveal() == "qrst uvwx yzab cdef"
+    assert "abcd" not in repr(accounts) and "qrst" not in repr(accounts)
+
+
+def test_missing_rehearsal_settings_are_all_named(minimal_run_env: dict[str, str]) -> None:
+    env = minimal_run_env | {"REHEARSAL_INTERNAL_SENDER": "in@gmail.test"}
+
+    with pytest.raises(ConfigError) as raised:
+        require_rehearsal_accounts(load_settings(env, purpose="tools"))
+
+    message = str(raised.value)
+    assert "REHEARSAL_INTERNAL_APP_PASSWORD" in message
+    assert "REHEARSAL_EXTERNAL_SENDER" in message and "REHEARSAL_EXTERNAL_APP_PASSWORD" in message
+    assert "REHEARSAL_INTERNAL_SENDER" not in message
+    assert ".env" in raised.value.next_action

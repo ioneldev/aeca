@@ -1,0 +1,144 @@
+"""The `aeca eval`, `aeca seed-calendar` and `aeca rehearse` commands, which the Make targets run.
+
+They print what they did by id and count, never an email's contents.
+"""
+
+import argparse
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from aeca.adapters.anthropic_client import AnthropicClient
+from aeca.adapters.clock import SystemClock
+from aeca.adapters.google_services import build_google_services
+from aeca.adapters.models_file import load_models
+from aeca.adapters.rotating_log import Rotation
+from aeca.adapters.tracer import JsonlTracer
+from aeca.application.budget import Budget
+from aeca.application.decide import DecideDeps, decide
+from aeca.domain.errors import ConfigError
+from aeca.domain.secret import SecretStr
+from aeca.settings import Settings, load_settings, require_rehearsal_accounts
+from aeca.tools.corpus import load_corpus
+from aeca.tools.evaluate import evaluate, format_report, write_report
+from aeca.tools.rehearse import SmtpSender, rehearse
+from aeca.tools.seed_calendar import SeedWeek, next_monday, seed_calendar
+
+DEFAULT_CORPUS = Path("tests/corpus/emails.json")
+TRACE_ROTATION = Rotation(max_bytes=5_000_000, keep=3)
+
+
+def add_tool_commands(subparsers: Any) -> None:
+    evaluation = subparsers.add_parser("eval", help="decide every corpus email for real (paid)")
+    _add_corpus_option(evaluation)
+    evaluation.add_argument("--out", type=Path, help="where to write the JSON report")
+    evaluation.set_defaults(handler=_eval)
+    seeding = subparsers.add_parser("seed-calendar", help="fill a test week in the real calendar")
+    seeding.set_defaults(handler=_seed_calendar)
+    rehearsal = subparsers.add_parser("rehearse", help="send the corpus as real mail")
+    _add_corpus_option(rehearsal)
+    rehearsal.set_defaults(handler=_rehearse)
+
+
+def _add_corpus_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
+
+
+def _eval(arguments: argparse.Namespace) -> int:
+    settings = load_settings(os.environ, purpose="tools")
+    corpus = load_corpus(arguments.corpus)
+    data_dir = _writable_directory(settings.data_dir)
+    clock = SystemClock()
+    budget = Budget(settings.max_usd_per_day)
+    deps = _decide_deps(settings, data_dir=data_dir, clock=clock, budget=budget)
+    report = evaluate(corpus, lambda facts: decide(facts, deps), budget=budget, clock=clock)
+    path = arguments.out or data_dir / f"eval-{_utc_stamp(clock.now())}.json"
+    write_report(report, path)
+    print(format_report(report))
+    print(f"\nreport written to {path}")
+    return 0
+
+
+def _decide_deps(
+    settings: Settings, *, data_dir: Path, clock: SystemClock, budget: Budget
+) -> DecideDeps:
+    tracer = _tracer(settings, data_dir)
+    choice = load_models().decision
+    return DecideDeps(
+        model=AnthropicClient.from_api_key(_anthropic_key(settings), tracer),
+        model_name=choice.model,
+        effort=choice.effort,
+        clock=clock,
+        zone=_eval_zone(settings),
+        tracer=tracer,
+        budget=budget,
+    )
+
+
+def _anthropic_key(settings: Settings) -> SecretStr:
+    if settings.anthropic_api_key is None:
+        raise ConfigError(
+            "ANTHROPIC_API_KEY is not set.",
+            next_action="Set ANTHROPIC_API_KEY in .env (see .env.example), then run again.",
+        )
+    return settings.anthropic_api_key
+
+
+def _tracer(settings: Settings, data_dir: Path) -> JsonlTracer:
+    secrets = (
+        settings.google_client_secret,
+        *(s for s in (settings.google_refresh_token, settings.anthropic_api_key) if s is not None),
+    )
+    return JsonlTracer(
+        data_dir / "eval-trace",
+        secrets=secrets,
+        rotation=TRACE_ROTATION,
+        debug_enabled=False,
+        clock=SystemClock(),
+    )
+
+
+def _eval_zone(settings: Settings) -> ZoneInfo:
+    """TIMEZONE when set, and then no Google credentials are needed for it."""
+    if settings.timezone is not None:
+        return ZoneInfo(settings.timezone)
+    return ZoneInfo(build_google_services(settings).calendar.time_zone())
+
+
+def _writable_directory(directory: Path) -> Path:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise ConfigError(
+            f"AECA_DATA_DIR={directory} cannot be written: {error.strerror}.",
+            next_action="Set AECA_DATA_DIR in .env to a writable folder, then run again.",
+        ) from error
+    return directory
+
+
+def _utc_stamp(moment: datetime) -> str:
+    return moment.strftime("%Y%m%dT%H%M%SZ")
+
+
+def _seed_calendar(_arguments: argparse.Namespace) -> int:
+    settings = load_settings(os.environ, purpose="tools")
+    services = build_google_services(settings)
+    zone = ZoneInfo(services.calendar.time_zone())
+    week_start = next_monday(SystemClock().now(), zone)
+    ids = seed_calendar(services.seed_calendar, SeedWeek(week_start=week_start, zone=zone))
+    print(f"Seeded {len(ids)} events for the week of {week_start} ({zone.key}).")
+    print("event ids: " + ", ".join(ids))
+    return 0
+
+
+def _rehearse(arguments: argparse.Namespace) -> int:
+    settings = load_settings(os.environ, purpose="tools")
+    accounts = require_rehearsal_accounts(settings)
+    corpus = load_corpus(arguments.corpus)
+    sender = SmtpSender(accounts, recipient=settings.gmail_address)
+    sent = rehearse(corpus, sender)
+    print(f"Sent {len(sent)} of {len(corpus)} corpus emails to {settings.gmail_address}.")
+    print("message ids: " + ", ".join(f"<corpus-{email_id}@aeca.test>" for email_id in sent))
+    return 0
