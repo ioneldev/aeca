@@ -49,6 +49,7 @@ def test_an_unknown_model_is_an_error_never_a_zero() -> None:
     [
         ("claude-opus-5-5", "0.20", "5.00"),
         ("claude-opus-4-8", "0.50", "6.25"),
+        ("claude-opus-5", "0.50", "6.25"),
         ("claude-sonnet-5-5", "0.20", "2.50"),
         ("claude-haiku-5-5", "0.01", "0.125"),
     ],
@@ -60,3 +61,9 @@ def test_each_models_cache_rates_are_its_own(model: str, cache_read: str, cache_
 
 def test_the_worst_case_cost_is_the_dearest_model_so_an_unpriced_call_still_counts() -> None:
     assert worst_case_cost_usd(usage(output_tokens=1_000_000)) == Decimal("25.00")
+
+
+def test_opus_5_is_priced_as_a_plausible_fallback() -> None:
+    assert cost_usd(
+        "claude-opus-5", usage(input_tokens=1_000_000, output_tokens=1_000_000)
+    ) == Decimal("30.00")

@@ -17,7 +17,7 @@ from anthropic.types.beta import (
 )
 from pydantic import BaseModel, ValidationError
 
-from aeca.adapters.pricing import cost_usd, worst_case_cost_usd
+from aeca.adapters.pricing import cost_usd, is_priced, worst_case_cost_usd
 from aeca.application.ports import (
     LLMClient,
     LLMRequest,
@@ -28,7 +28,6 @@ from aeca.application.ports import (
     Tracer,
     Usage,
 )
-from aeca.domain.errors import AecaError
 from aeca.domain.secret import SecretStr
 
 MODELS_FILE = "aeca/config/models.yaml"
@@ -229,11 +228,18 @@ class AnthropicClient(LLMClient):
     def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> tuple[T, LLMResponse]:
         started = self._clock()
         reply = self._send_with_retries(_params(request, schema))
-        paid = _paid_call(reply, latency_s=self._clock() - started)
+        paid = _paid_call(
+            reply, latency_s=self._clock() - started, on_unpriced=self._trace_unpriced
+        )
         if reply.stop_reason == "refusal":
             raise _refused(paid)
         response = _response(reply, paid)
         return _read_reply(reply, schema, response), response
+
+    # The call is already paid for, and a fallback model can be any the API picks, so it is
+    # charged at the dearest known rate and the decision carries on.
+    def _trace_unpriced(self, model: str) -> None:
+        self._tracer.event("unpriced_model", model=model)
 
     def _send_with_retries(self, params: dict[str, Any]) -> BetaMessage:
         for attempt in range(1, ATTEMPTS + 1):
@@ -324,15 +330,18 @@ class _Hop:
     usage: Usage
 
 
-def _paid_call(reply: BetaMessage, *, latency_s: float) -> PaidCall:
+def _paid_call(
+    reply: BetaMessage, *, latency_s: float, on_unpriced: Callable[[str], None]
+) -> PaidCall:
     hops = _hops(reply)
-    total = _total(hops)
-    served_by = hops[-1].model
-    try:
-        cost = sum((cost_usd(hop.model, hop.usage) for hop in hops), Decimal(0))
-    except AecaError as unpriced:
-        raise _unpriced(unpriced, total, served_by, latency_s) from None
-    return PaidCall(usage=total, model=served_by, cost_usd=cost, latency_s=latency_s)
+    cost = Decimal(0)
+    for hop in hops:
+        if is_priced(hop.model):
+            cost += cost_usd(hop.model, hop.usage)
+        else:
+            on_unpriced(hop.model)
+            cost += worst_case_cost_usd(hop.usage)
+    return PaidCall(usage=_total(hops), model=hops[-1].model, cost_usd=cost, latency_s=latency_s)
 
 
 # usage.iterations says which model each token was billed at; without it the reply's model served
@@ -361,21 +370,6 @@ def _total(hops: list[_Hop]) -> Usage:
         output_tokens=sum(hop.usage.output_tokens for hop in hops),
         cache_read=sum(hop.usage.cache_read for hop in hops),
         cache_write=sum(hop.usage.cache_write for hop in hops),
-    )
-
-
-# Raised after the call was paid for, with the dearest known rate so the cap still sees it. It stops
-# the tick: every email the same model serves would hit it again.
-def _unpriced(unpriced: AecaError, usage: Usage, model: str, latency_s: float) -> ProviderError:
-    paid = PaidCall(
-        usage=usage, model=model, cost_usd=worst_case_cost_usd(usage), latency_s=latency_s
-    )
-    return ProviderError(
-        str(unpriced),
-        next_action=unpriced.next_action,
-        kind="unpriced_model",
-        system_wide=True,
-        paid_call=paid,
     )
 
 

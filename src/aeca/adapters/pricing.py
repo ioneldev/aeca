@@ -28,6 +28,12 @@ PRICES: dict[str, Rates] = {
         cache_read=Decimal("0.20"),
         cache_write=Decimal("5.00"),
     ),
+    "claude-opus-5": Rates(
+        input=Decimal("5.00"),
+        output=Decimal("25.00"),
+        cache_read=Decimal("0.50"),
+        cache_write=Decimal("6.25"),
+    ),
     "claude-opus-4-8": Rates(
         input=Decimal("5.00"),
         output=Decimal("25.00"),

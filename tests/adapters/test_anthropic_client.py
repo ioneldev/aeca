@@ -11,7 +11,6 @@ from pydantic import BaseModel
 from aeca.adapters.anthropic_client import AnthropicClient
 from aeca.application.ports import LLMRequest, ProviderError, ReplyUnusable
 from aeca.domain.decision import ModelDecision
-from aeca.domain.errors import AecaError
 from aeca.domain.secret import SecretStr
 
 FAKE_KEY = SecretStr("sk-ant-fake-0123456789-not-a-real-key")
@@ -226,11 +225,6 @@ def test_a_fallback_model_is_priced_by_the_model_that_served_it() -> None:
     assert float(response.cost_usd) == pytest.approx(1000 * 5e-6 + 100 * 25e-6)
 
 
-def test_an_unknown_served_model_is_an_error_never_a_zero_cost() -> None:
-    with pytest.raises(AecaError):
-        Harness(ok(model="claude-mystery-1")).parse()
-
-
 def test_a_refusal_raises_a_charged_refused_error_that_is_not_system_wide() -> None:
     harness = Harness(ok(text="", content=[], stop_reason="refusal"))
     with pytest.raises(ProviderError) as raised:
@@ -362,11 +356,17 @@ def test_a_call_without_iterations_is_priced_at_the_reply_model() -> None:
     assert float(response.cost_usd) == pytest.approx(1000 * 5e-6 + 100 * 25e-6)
 
 
-def test_an_unpriced_served_model_is_charged_at_the_dearest_rate_and_stops_the_tick() -> None:
-    with pytest.raises(ProviderError) as raised:
-        Harness(ok(model="claude-mystery-1")).parse()
-    error = raised.value
-    assert (error.kind, error.system_wide) == ("unpriced_model", True)
-    assert error.paid_call is not None
-    assert error.paid_call.cost_usd == Decimal(1000) * 5 / 1_000_000 + Decimal(100) * 25 / 1_000_000
-    assert "claude-mystery-1" in str(error)
+def test_an_unpriced_served_model_is_charged_at_the_dearest_rate_traced_and_carried_on() -> None:
+    harness = Harness(ok(model="claude-mystery-1"))
+    decision, response = harness.parse()
+    assert decision.primary_label == "TASK"
+    assert response.model == "claude-mystery-1"
+    assert response.cost_usd == Decimal(1000) * 5 / 1_000_000 + Decimal(100) * 25 / 1_000_000
+    [event] = harness.tracer.of_kind("unpriced_model")
+    assert event.fields["model"] == "claude-mystery-1"
+
+
+def test_a_priced_model_emits_no_unpriced_event() -> None:
+    harness = Harness(ok())
+    harness.parse()
+    assert harness.tracer.of_kind("unpriced_model") == []
