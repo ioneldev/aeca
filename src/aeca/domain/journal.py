@@ -36,6 +36,10 @@ class JournalledDecision:
     # What the plan found that no rule decided, such as an invitation already on the calendar.
     notes: tuple[str, ...]
 
+    @property
+    def audit_rules(self) -> tuple[str, ...]:
+        return self.rules_fired + self.dropped + self.notes
+
     @staticmethod
     def of(
         decision: Decision, *, holds: tuple[Interval, ...], notes: tuple[str, ...]
