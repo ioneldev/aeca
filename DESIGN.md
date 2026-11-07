@@ -45,7 +45,7 @@ Why this split: the labels are a judgement, so a model makes them. What goes out
 An email is untrusted text. Against a hostile one:
 1. It is data: bounded, control characters escaped, fenced, and the prompt says so.
 2. The model has no write tool, so an injection can only change a label or a field the validator then checks.
-3. Replies go only to the original `From`, never `Reply-To`, never to an automated sender, a failed-DMARC sender or the account itself, and at most one unapproved reply per thread.
+3. Replies go only to the original `From`, never `Reply-To`, never to an automated sender or a failed-DMARC sender, never unapproved to the account itself, and at most one unapproved reply per thread. Only an unapproved reply to the account itself is refused: an approved one, such as a confirmation, can go to it.
 4. A reply can't approve itself: AECA's own words never count, and no line it writes starts with APPROVE or REJECT.
 
 ## Known limitations, and one more week

@@ -41,7 +41,7 @@ What AECA doesn't do, and what each costs. The first four are named in the spec 
 
 - **Labels are a judgement.** The corpus score is 100% on 35 emails the build was tuned on. The evaluators' 20 are new.
 - **The 12-hour limit on a meeting window is a guess** ([0058](decisions/0058-vague-requests-get-alternatives.md)).
-- **The urgent window of two working days is a guess** ([0019](decisions/0019-what-counts-as-urgent.md)).
+- **The urgent window of two working days is a guess, tuned with `make eval`** (spec §4.2, [0019](decisions/0019-what-counts-as-urgent.md)).
 - **Cost.** About half a cent per call with a warm cache, about 2 cents after a quiet spell. The cap is `MAX_USD_PER_DAY` ([0002](decisions/0002-first-live-run.md)).
 
 ## Testing

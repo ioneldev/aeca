@@ -50,4 +50,4 @@ One record per decision in the spec, per deviation the plan made on 2026-11-07, 
 - [0055: Approvals don't expire, but their holds do](0055-approvals-do-not-expire-but-holds-do.md), Claude
 - [0056: Where the production items land in the four days](0056-where-the-production-items-land.md), Claude
 - [0057: The rehearsal sends through Mail.app, from two addresses it already has](0057-rehearsal-through-mail-app.md), Ionel. Supersedes 0049
-- [0058: A vague meeting request gets alternatives, not a booked time](0058-vague-requests-get-alternatives.md), Ionel
+- [0058: A vague meeting request gets alternatives, not a booked time](0058-vague-requests-get-alternatives.md), Ionel decided that a vague request gets alternatives (2026-11-07), and Claude chose the 12-hour limit that implements it

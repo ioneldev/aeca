@@ -15,7 +15,7 @@ It is Ionel Cîmpan's take-home for Telekom's Senior Developer Python LLM role. 
 | `MARKETING` | Archives; may acknowledge | No |
 | `SPAM` | Moves to Gmail's Spam folder, never replies | No |
 | `UNKNOWN` | The label only. The email couldn't be classified. | No |
-| `URGENT` (added to any of the above) | Stars it. From an internal sender, also sends the manager a notice with a reply drafted to the sender. | The reply waits for approval |
+| `URGENT` (added to any of the above) | Stars it. From an internal sender, the approval request carries the urgent notice and a reply drafted to the sender. A separate notice goes to the manager only when there is no draft to approve. | The drafted reply waits for approval |
 
 Every email also gets `AECA/processed` when AECA is done with it, `AECA/awaiting` while an approval is open, and `AECA/error` if it failed.
 
@@ -23,16 +23,16 @@ Code owns the policy. The model labels the email and extracts facts, such as the
 
 ## Set up
 
-You need Docker with the Compose plugin, `make`, an Anthropic API key, and the Google values for the AECA inbox. On Windows, `make` needs WSL. The image builds on arm64 and amd64.
+You need Docker with the Compose plugin, `make`, and an Anthropic API key. Ionel sends you four values for the AECA inbox: `GMAIL_ADDRESS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN`. On Windows, `make` needs WSL. The image builds on arm64 and amd64.
 
 ```sh
-cp .env.example .env     # then fill in .env, see the table below
+cp .env.example .env     # put Ionel's four values in it, and your own ANTHROPIC_API_KEY
 make preflight           # checks Docker, Compose, the daemon and .env
 make image               # builds the image locally; nothing is published
 make start               # runs AECA in the background
 ```
 
-If `GOOGLE_REFRESH_TOKEN` is empty, run `make auth` once before `make start`. It prints a link; open it, pick the AECA account and consent. The token is written into `.env` without being printed.
+`make auth` is not part of a normal start. Run it only when the token Ionel sent stops working, or to install AECA on another account. It prints a link; open it, pick the account and consent. The new token is written into `.env` without being printed.
 
 If your own consent screen is in Testing mode, tokens last 7 days. Run `make auth` again when one expires.
 
@@ -40,7 +40,7 @@ If your own consent screen is in Testing mode, tokens last 7 days. Run `make aut
 |---|---|
 | `make preflight` | Checks `docker`, Compose, a running daemon, `.env`, and that each required setting has a value. It never prints a value. |
 | `make image` | Builds the one image that both Compose services use. |
-| `make auth` | One-time Google consent in the browser. |
+| `make auth` | Google consent in the browser, for a new token. Not needed with the token Ionel sent. |
 | `make start` | Starts AECA in the background. It restarts itself unless you stop it. |
 | `make stop` | Stops AECA after the email in hand, within 2 minutes. |
 | `make logs` | Follows one JSON summary line per email. |
@@ -56,10 +56,10 @@ Each setting is an environment variable. A blank value means the default.
 
 | Variable | Default | What |
 |---|---|---|
-| `GMAIL_ADDRESS` | required | The AECA inbox. It must be the account the token belongs to, ignoring case and Gmail's dots. |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required | The OAuth client. |
-| `GOOGLE_REFRESH_TOKEN` | required to run | The token. `make auth` writes it. |
-| `ANTHROPIC_API_KEY` | required to run | The model key. |
+| `GMAIL_ADDRESS` | required | The AECA inbox. Ionel sends it. It must be the account the token belongs to, ignoring case and Gmail's dots. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required | The OAuth client. Ionel sends them. |
+| `GOOGLE_REFRESH_TOKEN` | required to run | The token. Ionel sends it. `make auth` writes a new one if it stops working. |
+| `ANTHROPIC_API_KEY` | required to run | The model key. You bring your own. |
 | `MANAGER_ADDRESS` | the AECA account | Where approval requests, urgent notices and alerts go, and the one outside address whose replies can approve. |
 | `INTERNAL_SENDERS` | empty | Comma-separated addresses that count as internal. Empty makes every urgent sender count as internal. |
 | `BULK_SENDERS` | empty | Addresses or domains that are always bulk. They never get an automatic reply. |
