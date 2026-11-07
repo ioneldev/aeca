@@ -21,7 +21,7 @@ from aeca.application.budget import Budget
 from aeca.application.decide import DecideDeps, decide
 from aeca.domain.errors import ConfigError
 from aeca.domain.secret import SecretStr
-from aeca.settings import Settings, load_settings, require_rehearsal_accounts
+from aeca.settings import Settings, load_settings, require_rehearsal_senders
 from aeca.tools.corpus import corpus_message_id, load_corpus
 from aeca.tools.evaluate import (
     EvalReport,
@@ -31,7 +31,7 @@ from aeca.tools.evaluate import (
     format_report,
     write_report,
 )
-from aeca.tools.rehearse import SmtpSender, rehearse
+from aeca.tools.rehearse import MailAppSender, OsascriptRunner, plan_rehearsal, rehearse
 from aeca.tools.seed_calendar import SeedWeek, next_monday, seed_calendar
 
 DEFAULT_CORPUS = Path("tests/corpus/emails.json")
@@ -181,9 +181,13 @@ def _seed_calendar(arguments: argparse.Namespace) -> int:
 
 def _rehearse(arguments: argparse.Namespace) -> int:
     settings = load_settings(os.environ, purpose="tools")
-    accounts = require_rehearsal_accounts(settings)
+    senders = require_rehearsal_senders(settings)
+    print(f"internal: {senders.internal}\nexternal: {senders.external}", flush=True)
     corpus = load_corpus(arguments.corpus)
-    sender = SmtpSender(accounts, recipient=settings.gmail_address)
+    plan = plan_rehearsal(corpus)
+    print(f"Sending {len(plan.to_send)} of {len(corpus)} corpus emails through Mail.app.")
+    print("left for the eval only: " + (", ".join(plan.eval_only_ids) or "none"))
+    sender = MailAppSender(senders, recipient=settings.gmail_address, runner=OsascriptRunner())
     sent = rehearse(corpus, sender, on_sent=_announce_sent)
     print(f"Sent {len(sent)} of {len(corpus)} corpus emails to {settings.gmail_address}.")
     return 0

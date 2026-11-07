@@ -20,8 +20,6 @@ SECRET_VARIABLES = (
     "ANTHROPIC_API_KEY",
     "GOOGLE_CLIENT_SECRET",
     "GOOGLE_REFRESH_TOKEN",
-    "REHEARSAL_INTERNAL_APP_PASSWORD",
-    "REHEARSAL_EXTERNAL_APP_PASSWORD",
 )
 REDACTED = "[REDACTED]"
 # Shorter than any fragment worth having, and longer than the public prefix sk-ant-api03-.

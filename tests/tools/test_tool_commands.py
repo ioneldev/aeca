@@ -15,21 +15,19 @@ def tools_environment(monkeypatch: pytest.MonkeyPatch, minimal_run_env: dict[str
         monkeypatch.setenv(name, value)
     for name in (
         "REHEARSAL_INTERNAL_SENDER",
-        "REHEARSAL_INTERNAL_APP_PASSWORD",
         "REHEARSAL_EXTERNAL_SENDER",
-        "REHEARSAL_EXTERNAL_APP_PASSWORD",
     ):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_rehearse_without_its_accounts_names_the_missing_settings_and_connects_nowhere(
+def test_rehearse_without_its_senders_names_the_missing_settings_and_runs_nothing(
     tools_environment: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     code = cli.main(["rehearse"])
 
     err = capsys.readouterr().err
     assert code == 1
-    assert "REHEARSAL_INTERNAL_SENDER" in err and "REHEARSAL_EXTERNAL_APP_PASSWORD" in err
+    assert "REHEARSAL_INTERNAL_SENDER" in err and "REHEARSAL_EXTERNAL_SENDER" in err
 
 
 def test_eval_with_an_unreadable_corpus_says_so(
@@ -114,3 +112,24 @@ def test_a_week_start_that_is_not_a_monday_is_refused(
     code = cli.main(["seed-calendar", "--week-start", "2026-11-10"])
 
     assert code == 1 and "Monday" in capsys.readouterr().err
+
+
+def test_rehearse_says_which_address_plays_which_role_before_sending(
+    tools_environment: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("REHEARSAL_INTERNAL_SENDER", "in@mail.test")
+    monkeypatch.setenv("REHEARSAL_EXTERNAL_SENDER", "out@mail.test")
+    monkeypatch.setattr(tool_commands, "OsascriptRunner", _RefusingRunner)
+
+    cli.main(["rehearse", "--corpus", str(tmp_path / "none.json")])
+
+    out = capsys.readouterr().out
+    assert "internal: in@mail.test" in out and "external: out@mail.test" in out
+
+
+class _RefusingRunner:
+    def run(self, script: str, arguments: object = ()) -> str:
+        raise AssertionError("a test must never run osascript")

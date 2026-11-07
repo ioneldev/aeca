@@ -114,6 +114,7 @@ def to_mime(
     email: CorpusEmail, sender: str, *, recipient: str, parent: CorpusEmail | None = None
 ) -> EmailMessage:
     message = _compose(email, sender, recipient=recipient)
+    # Mail.app cannot set headers, so the rehearsal no longer uses this; it is identified by sender.
     message[REHEARSAL_HEADER] = REHEARSAL_MARKER
     if parent is not None:
         del message["Subject"]
