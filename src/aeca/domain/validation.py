@@ -21,19 +21,17 @@ from aeca.domain.decision import (
 )
 from aeca.domain.facts import EmailFacts
 from aeca.domain.labels import LABEL_RECORDS, Label, ReplyKind
+from aeca.domain.replies import check_urgent_draft
 from aeca.domain.text import bounded, visible
 
 SUMMARY_LIMIT = 200
 SUSPECTED_INJECTION_LIMIT = 500
 TITLE_LIMIT = 200
 QUOTE_LIMIT = 500
-URGENT_DRAFT_LIMIT = 800
 MIN_MEETING_MINUTES = 5
 MAX_MEETING_MINUTES = 480
 
 WHITESPACE_RUN = re.compile(r"\s+")
-LINK_IN_TEXT = re.compile(r"https?://|www\.", re.IGNORECASE)
-ADDRESS_IN_TEXT = re.compile(r"\S+@\S+\.\S+")
 QUOTE_MARKS = str.maketrans(
     {"\u201c": '"', "\u201d": '"', "\u201e": '"', "\u2018": "'", "\u2019": "'"}
 )
@@ -117,11 +115,11 @@ class _FieldValidation:
         if not (urgent and self.context.facts.internal):
             self.dropped.append("urgent_draft: only for an urgent email from an internal sender")
             return None
-        broken_rule = _urgent_draft_fault(draft)
+        broken_rule = check_urgent_draft(draft)
         if broken_rule is not None:
             self.dropped.append(f"urgent_draft: {broken_rule}")
             return None
-        return draft
+        return visible(draft)
 
     def _suspected_injection(self) -> str | None:
         suspected = self.submitted.suspected_injection
@@ -202,13 +200,3 @@ def _quote_is_in_email(quote: str | None, facts: EmailFacts) -> bool:
 
 def _normalised(text: str) -> str:
     return WHITESPACE_RUN.sub(" ", text.translate(QUOTE_MARKS)).strip().lower()
-
-
-def _urgent_draft_fault(draft: str) -> str | None:
-    if LINK_IN_TEXT.search(draft):
-        return "contains a link"
-    if ADDRESS_IN_TEXT.search(draft):
-        return "contains an email address"
-    if len(draft) > URGENT_DRAFT_LIMIT:
-        return f"is longer than {URGENT_DRAFT_LIMIT} characters"
-    return None
