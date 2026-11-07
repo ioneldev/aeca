@@ -32,6 +32,7 @@ from aeca.domain.secret import SecretStr
 
 MODELS_FILE = "aeca/config/models.yaml"
 ATTEMPTS = 3
+KEY_REFUSAL_KINDS = frozenset({"authentication", "permission"})
 BACKOFF_SECONDS = (2, 4, 8)
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 PROMPT_CACHE = {"type": "ephemeral"}
@@ -236,6 +237,21 @@ class AnthropicClient(LLMClient):
         response = _response(reply, paid)
         return _read_reply(reply, schema, response), response
 
+    # The model record is read, not a message sent: it needs the key and the model name, and costs
+    # nothing, so a start that fails here has spent nothing.
+    def check_access(self, model: str) -> None:
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                self._sdk.models.retrieve(model)
+            except anthropic.AnthropicError as error:
+                classified = _classify(error)
+            else:
+                return
+            try:
+                self._after_failed_attempt(attempt, classified)
+            except ProviderError as failure:
+                raise _named_as_key_refusal(failure) from None
+
     # The call is already paid for, and a fallback model can be any the API picks, so it is
     # charged at the dearest known rate and the decision carries on.
     def _trace_unpriced(self, model: str) -> None:
@@ -272,6 +288,14 @@ class AnthropicClient(LLMClient):
         if wait_s is None:
             raise classified.as_provider_error() from None
         self._sleep(wait_s)
+
+
+def _named_as_key_refusal(failure: ProviderError) -> ProviderError:
+    if failure.kind not in KEY_REFUSAL_KINDS:
+        return failure
+    return ProviderError(
+        str(failure), next_action=failure.next_action, kind="key_refused", system_wide=True
+    )
 
 
 def _classify(error: anthropic.AnthropicError) -> _Classified:

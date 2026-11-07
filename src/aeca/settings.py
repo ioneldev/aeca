@@ -3,11 +3,21 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aeca.domain.errors import ConfigError
+from aeca.domain.planner import parse_work_hours
 from aeca.domain.secret import SecretStr
 
 Purpose = Literal["run", "auth", "tools"]
+IntegerRange = tuple[int | None, int | None]
+DEFAULT_WORK_HOURS = "Mon-Fri 09:00-17:00"
+
+# The edges of what AECA can run sensibly with.
+MIN_POLL_SECONDS = 5
+MEETING_MINUTES_RANGE = (5, 480)
+BUFFER_MINUTES_RANGE = (0, 120)
+ALTERNATIVE_DAYS_RANGE = (1, 30)
 
 TRUE_SPELLINGS = frozenset({"true", "1", "yes"})
 FALSE_SPELLINGS = frozenset({"false", "0", "no"})
@@ -67,17 +77,19 @@ def load_settings(environ: Mapping[str, str], *, purpose: Purpose) -> Settings:
         manager_address=reader.text("MANAGER_ADDRESS"),
         internal_senders=reader.lowercased_set("INTERNAL_SENDERS"),
         bulk_senders=reader.lowercased_set("BULK_SENDERS"),
-        timezone=reader.text("TIMEZONE"),
-        work_hours=reader.text("WORK_HOURS") or "Mon-Fri 09:00-17:00",
-        meeting_minutes=reader.integer("MEETING_MINUTES", default=30),
-        buffer_minutes=reader.integer("BUFFER_MINUTES", default=10),
-        alternative_days=reader.integer("ALTERNATIVE_DAYS", default=5),
-        poll_seconds=reader.integer("POLL_SECONDS", default=30),
+        timezone=reader.timezone("TIMEZONE"),
+        work_hours=reader.work_hours("WORK_HOURS"),
+        meeting_minutes=reader.integer("MEETING_MINUTES", default=30, within=MEETING_MINUTES_RANGE),
+        buffer_minutes=reader.integer("BUFFER_MINUTES", default=10, within=BUFFER_MINUTES_RANGE),
+        alternative_days=reader.integer(
+            "ALTERNATIVE_DAYS", default=5, within=ALTERNATIVE_DAYS_RANGE
+        ),
+        poll_seconds=reader.integer("POLL_SECONDS", default=30, within=(MIN_POLL_SECONDS, None)),
         sales_decline_needs_approval=reader.boolean("SALES_DECLINE_NEEDS_APPROVAL"),
-        max_usd_per_day=reader.decimal("MAX_USD_PER_DAY", default=Decimal(5)),
-        alert_after_failures=reader.integer("ALERT_AFTER_FAILURES", default=3),
+        max_usd_per_day=reader.positive_decimal("MAX_USD_PER_DAY", default=Decimal(5)),
+        alert_after_failures=reader.integer("ALERT_AFTER_FAILURES", default=3, within=(1, None)),
         debug_log=reader.boolean("DEBUG_LOG"),
-        debug_log_days=reader.integer("DEBUG_LOG_DAYS", default=7),
+        debug_log_days=reader.integer("DEBUG_LOG_DAYS", default=7, within=(1, None)),
         extra_ca_certs=reader.path("EXTRA_CA_CERTS"),
         force_lock=reader.boolean("FORCE_LOCK"),
         data_dir=reader.path("AECA_DATA_DIR") or Path("/data"),
@@ -141,11 +153,36 @@ class _EnvironmentReader:
         entries = (self.text(name) or "").split(",")
         return frozenset(entry.strip().lower() for entry in entries if entry.strip())
 
-    def integer(self, name: str, *, default: int) -> int:
-        return self._parsed(name, int, default, expected="a whole number")
+    def integer(self, name: str, *, default: int, within: IntegerRange = (None, None)) -> int:
+        value = self._parsed(name, int, default, expected="a whole number")
+        low, high = within
+        if (low is not None and value < low) or (high is not None and value > high):
+            raise _malformed(name, expected=_range_in_words(low, high))
+        return value
 
-    def decimal(self, name: str, *, default: Decimal) -> Decimal:
-        return self._parsed(name, Decimal, default, expected="a number")
+    def positive_decimal(self, name: str, *, default: Decimal) -> Decimal:
+        value = self._parsed(name, Decimal, default, expected="a number")
+        if not value.is_finite() or value <= 0:
+            raise _malformed(name, expected="a number above zero")
+        return value
+
+    def work_hours(self, name: str) -> str:
+        value = self.text(name) or DEFAULT_WORK_HOURS
+        try:
+            parse_work_hours(value)
+        except ValueError as error:
+            raise _malformed(name, expected=f"like {DEFAULT_WORK_HOURS} ({error})") from None
+        return value
+
+    def timezone(self, name: str) -> str | None:
+        value = self.text(name)
+        if value is None:
+            return None
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise _malformed(name, expected="an IANA name such as Europe/Bucharest") from None
+        return value
 
     def boolean(self, name: str) -> bool:
         value = self.text(name)
@@ -163,6 +200,12 @@ class _EnvironmentReader:
             return parse(value)
         except (ValueError, InvalidOperation):
             raise _malformed(name, expected=expected) from None
+
+
+def _range_in_words(low: int | None, high: int | None) -> str:
+    if high is None:
+        return f"a whole number of at least {low}"
+    return f"a whole number from {low} to {high}"
 
 
 def _malformed(name: str, *, expected: str) -> ConfigError:

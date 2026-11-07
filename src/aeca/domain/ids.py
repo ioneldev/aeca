@@ -3,6 +3,7 @@ never reuse one."""
 
 import base64
 import hashlib
+from datetime import date
 
 EVENT_ID_LENGTH = 26
 
@@ -13,6 +14,12 @@ def action_key(source_message_id: str, step: str) -> str:
 
 def approval_id(source_message_id: str, attempt: int) -> str:
     return "a-" + _sha256_hex(f"approval:{source_message_id}:{attempt}")[:12]
+
+
+def alert_id(incident_kind: str, day: date) -> str:
+    """One per incident kind and UTC day, so a restart that lost the state file still finds the
+    alert it already sent and does not send it again."""
+    return "al-" + _sha256_hex(f"alert:{incident_kind}:{day.isoformat()}")[:12]
 
 
 def event_id(source_message_id: str, attempt: int) -> str:

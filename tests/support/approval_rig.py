@@ -16,6 +16,7 @@ from fakes.recording_console import RecordingConsole
 from support.decisions import decision_of
 from support.emails import make_raw
 from support.inbox_rig import ACCOUNT, BUCHAREST, PLAN_SETTINGS, InboxRig, RigOptions
+from support.quiet_service import nothing_to_start, quiet_watch
 
 from aeca.adapters.sqlite_state import SqliteState
 from aeca.application.approvals import ApprovalDeps, ApprovalService
@@ -164,6 +165,8 @@ class ApprovalRig:
                 console=self.console,
                 poll_seconds=30,
                 approvals=self.service,
+                watch=quiet_watch(),
+                start_up=nothing_to_start,
             )
         ).tick()
 

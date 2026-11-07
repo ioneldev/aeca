@@ -14,11 +14,20 @@ from aeca.adapters.rotating_log import Rotation
 from aeca.adapters.sqlite_state import SqliteState
 from aeca.adapters.tracer import JsonlTracer
 from aeca.application.approvals import ApprovalDeps, ApprovalService
-from aeca.application.budget import Budget
+from aeca.application.budget import Budget, StoreLedger
 from aeca.application.decide import DecideDeps, decide
 from aeca.application.executor import Executor, ExecutorDeps
+from aeca.application.incidents import Incidents, IncidentsDeps
 from aeca.application.process_email import InboxDeps, InboxProcessor, InboxSettings
 from aeca.application.service import Service, ServiceDeps
+from aeca.application.startup import (
+    ExecutorActionResumer,
+    ResumerDeps,
+    StartupDeps,
+    StartUpWork,
+    start_up,
+)
+from aeca.application.watch import FailureWatch, WatchDeps
 from aeca.domain.answers import AnswerRules
 from aeca.domain.errors import ConfigError
 from aeca.domain.facts import FactSettings
@@ -44,12 +53,14 @@ def build(settings: Settings) -> Service:
         clock=clock,
     )
     google = build_google_services(settings)
-    budget = Budget(settings.max_usd_per_day)
+    store = SqliteState(data_dir / STATE_FILE_NAME)
+    budget = Budget(settings.max_usd_per_day, ledger=StoreLedger(store, clock))
     chosen_model = load_models().decision
     # Read once at startup: every plan and every message states this zone.
     zone = _zone_of(settings, google)
+    model = AnthropicClient.from_api_key(_anthropic_key(settings), tracer)
     decide_deps = DecideDeps(
-        model=AnthropicClient.from_api_key(_anthropic_key(settings), tracer),
+        model=model,
         model_name=chosen_model.model,
         effort=chosen_model.effort,
         clock=clock,
@@ -58,7 +69,6 @@ def build(settings: Settings) -> Service:
         budget=budget,
     )
     mailbox = google.mailbox
-    store = SqliteState(data_dir / STATE_FILE_NAME)
     audit = JsonlAuditLog(data_dir / AUDIT_FILE_NAME, secrets=secrets, rotation=LOG_ROTATION)
     inbox_settings = _inbox_settings(settings, zone)
     executor = Executor(
@@ -102,13 +112,52 @@ def build(settings: Settings) -> Service:
             settings=inbox_settings,
         )
     )
+    console = JsonConsole(_print_line, Redactor(secrets), clock)
+    incidents = Incidents(
+        IncidentsDeps(
+            store=store,
+            mailbox=mailbox,
+            clock=clock,
+            manager_address=settings.manager_or_account,
+        )
+    )
+    startup_work = StartUpWork(
+        checks=StartupDeps(
+            mailbox=mailbox,
+            calendar=google.calendar,
+            model=model,
+            model_name=chosen_model.model,
+            gmail_address=settings.gmail_address,
+            internal_senders=settings.internal_senders,
+            console=console,
+        ),
+        resumer=ExecutorActionResumer(
+            ResumerDeps(
+                executor=executor,
+                mailbox=mailbox,
+                fact_settings=inbox_settings.facts,
+                tracer=tracer,
+            )
+        ),
+        store=store,
+        incidents=incidents,
+    )
     return Service(
         ServiceDeps(
             processor=processor,
             mailbox=mailbox,
-            console=JsonConsole(_print_line, Redactor(secrets), clock),
+            console=console,
             poll_seconds=settings.poll_seconds,
             approvals=approvals,
+            watch=FailureWatch(
+                WatchDeps(
+                    incidents=incidents,
+                    budget=budget,
+                    tracer=tracer,
+                    alert_after_failures=settings.alert_after_failures,
+                )
+            ),
+            start_up=lambda: start_up(startup_work),
         )
     )
 

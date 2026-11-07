@@ -3,8 +3,9 @@ from decimal import Decimal
 
 import pytest
 from fakes.fake_mailbox import FakeMailbox
-from fakes.fixed_clock import FIXED_NOW
 from fakes.recording_console import RecordingConsole
+from support.audit_lines import line_for
+from support.quiet_service import nothing_to_start, quiet_watch
 
 from aeca.application.decide import BudgetExhausted
 from aeca.application.ports import ProviderError
@@ -40,28 +41,6 @@ class ScriptedProcessor:
         return outcome
 
 
-def line_for(message_id: str, outcome: str = "done") -> AuditLine:
-    return AuditLine(
-        time=FIXED_NOW,
-        message_id=message_id,
-        thread_id="t",
-        sender="s",
-        subject="x",
-        label="TASK",
-        urgent=False,
-        decided_by="rule",
-        rules=(),
-        actions=(),
-        approval_id=None,
-        approval_state=None,
-        outcome=outcome,
-        error=None,
-        tokens_in=0,
-        tokens_out=0,
-        usd=Decimal(0),
-    )
-
-
 class ScriptedApprovals:
     """The approval loop: each tick returns the scripted lines, or raises the scripted error."""
 
@@ -91,6 +70,8 @@ class Rig:
                 console=self.console,
                 poll_seconds=POLL_SECONDS,
                 approvals=self.approvals,
+                watch=quiet_watch(),
+                start_up=nothing_to_start,
             )
         )
 
@@ -276,6 +257,8 @@ def test_run_waits_on_the_stop_event_so_a_stop_is_prompt(rig: Rig) -> None:
             console=rig.console,
             poll_seconds=3600,
             approvals=rig.approvals,
+            watch=quiet_watch(),
+            start_up=nothing_to_start,
         )
     )
 
