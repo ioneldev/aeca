@@ -182,6 +182,7 @@ def _seed_calendar(arguments: argparse.Namespace) -> int:
 def _rehearse(arguments: argparse.Namespace) -> int:
     settings = load_settings(os.environ, purpose="tools")
     senders = require_rehearsal_senders(settings)
+    print(f"internal: {senders.internal}\nexternal: {senders.external}", flush=True)
     corpus = load_corpus(arguments.corpus)
     plan = plan_rehearsal(corpus)
     print(f"Sending {len(plan.to_send)} of {len(corpus)} corpus emails through Mail.app.")

@@ -6,13 +6,13 @@ to the eval, and the rehearsal mail is told apart by its sender address.
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from aeca.domain.errors import AecaError
+from aeca.domain.errors import AecaError, ConfigError
+from aeca.domain.facts import same_gmail_account
 from aeca.settings import RehearsalSenders
 from aeca.tools.corpus import Attachment, CorpusEmail
 
@@ -39,7 +39,7 @@ _SCRIPT_TEMPLATE = f"""on run argv
         tell outgoing
             make new to recipient at end of to recipients with properties {{address:recipientAddress}}
             repeat with argumentIndex from {FIXED_ARGUMENT_COUNT + 1} to (count of argv)
-                make new attachment with properties {{file name:(POSIX file (item argumentIndex of argv))}} at after the last paragraph
+                make new attachment with properties {{file name:(POSIX file (item argumentIndex of argv))}} at after the last paragraph of content
             end repeat
         end tell
         send outgoing
@@ -53,6 +53,7 @@ _NEW_MESSAGE = """        set outgoing to make new outgoing message with propert
 _REPLY_OR_NEW_MESSAGE = f"""        set earlierMessages to (messages of sent mailbox whose subject is followedSubject and sender contains senderAddress)
         if (count of earlierMessages) > 0 then
             set outgoing to reply (item 1 of earlierMessages) opening window false
+            set subject of outgoing to messageSubject
             set content of outgoing to messageBody
             set sender of outgoing to senderAddress
             delete every to recipient of outgoing
@@ -122,35 +123,48 @@ def _can_be_sent_by_mail_app(email: CorpusEmail) -> bool:
 
 
 @dataclass(frozen=True)
+class Outgoing:
+    email: CorpusEmail
+    sender: str
+    parent: CorpusEmail | None
+    attachment_paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
 class MailAppSender:
     senders: RehearsalSenders
     recipient: str
     runner: ScriptRunner
 
-    def send(self, email: CorpusEmail, *, parent: CorpusEmail | None) -> None:
-        sender = self._sender_address_for(email)
-        with _placeholder_files(email.attachments) as attachment_paths:
-            script, arguments = self._script_for(email, sender, parent, attachment_paths)
-            try:
-                self.runner.run(script, arguments)
-            except ScriptFailed as failed:
-                raise _refused(email, sender, str(failed)) from failed
+    def send(self, email: CorpusEmail, *, parent: CorpusEmail | None, folder: Path) -> None:
+        outgoing = Outgoing(
+            email=email,
+            sender=self._sender_address_for(email),
+            parent=parent,
+            attachment_paths=_write_placeholders(folder / email.id, email.attachments),
+        )
+        script, arguments = self._script_for(outgoing)
+        try:
+            self.runner.run(script, arguments)
+        except ScriptFailed as failed:
+            raise _refused(email, outgoing.sender, str(failed)) from failed
 
     def _sender_address_for(self, email: CorpusEmail) -> str:
         return self.senders.internal if email.sender_role == "internal" else self.senders.external
 
-    def _script_for(
-        self,
-        email: CorpusEmail,
-        sender: str,
-        parent: CorpusEmail | None,
-        attachment_paths: list[Path],
-    ) -> tuple[str, list[str]]:
-        subject = email.subject if parent is None else f"{REPLY_PREFIX}{parent.subject}"
+    def _script_for(self, outgoing: Outgoing) -> tuple[str, list[str]]:
+        parent = outgoing.parent
+        subject = outgoing.email.subject if parent is None else f"{REPLY_PREFIX}{parent.subject}"
         followed_subject = "" if parent is None else parent.subject
         script = NEW_MESSAGE_SCRIPT if parent is None else REPLY_SCRIPT
-        arguments = [sender, self.recipient, subject, email.body, followed_subject]
-        return script, [*arguments, *map(str, attachment_paths)]
+        arguments = [
+            outgoing.sender,
+            self.recipient,
+            subject,
+            outgoing.email.body,
+            followed_subject,
+        ]
+        return script, [*arguments, *map(str, outgoing.attachment_paths)]
 
 
 def rehearse(
@@ -160,26 +174,43 @@ def rehearse(
     sleep: Callable[[float], None] = time.sleep,
     on_sent: Callable[[str], None] = lambda _email_id: None,
 ) -> list[str]:
-    """Ids of the emails sent, in corpus order."""
+    """Ids of the emails sent, in corpus order. Mail.app sends in the background, so the
+    attachment files stay until the whole run is done."""
+    refuse_addresses_that_would_confuse_the_test(sender)
     by_id = {email.id: email for email in corpus}
     sent: list[str] = []
-    for email in plan_rehearsal(corpus).to_send:
-        if sent:
-            sleep(SECONDS_BETWEEN_EMAILS)
-        try:
-            sender.send(email, parent=by_id.get(email.follows) if email.follows else None)
-        except RehearsalSendError as refused:
-            raise _with_delivered(refused, sent) from refused
-        sent.append(email.id)
-        on_sent(email.id)
+    with tempfile.TemporaryDirectory(prefix="aeca-rehearsal-") as folder:
+        for email in plan_rehearsal(corpus).to_send:
+            if sent:
+                sleep(SECONDS_BETWEEN_EMAILS)
+            parent = by_id.get(email.follows) if email.follows else None
+            try:
+                sender.send(email, parent=parent, folder=Path(folder))
+            except RehearsalSendError as refused:
+                raise _with_delivered(refused, sent) from refused
+            sent.append(email.id)
+            on_sent(email.id)
     return sent
 
 
-@contextmanager
-def _placeholder_files(attachments: list[Attachment]) -> Iterator[list[Path]]:
-    with tempfile.TemporaryDirectory(prefix="aeca-rehearsal-") as folder:
-        paths = [_write_placeholder(Path(folder), attachment) for attachment in attachments]
-        yield paths
+def refuse_addresses_that_would_confuse_the_test(sender: MailAppSender) -> None:
+    senders = sender.senders
+    if same_gmail_account(senders.internal, senders.external):
+        raise ConfigError(
+            "REHEARSAL_INTERNAL_SENDER and REHEARSAL_EXTERNAL_SENDER are the same address.",
+            next_action="Give the internal and the external role two different addresses.",
+        )
+    for address in (senders.internal, senders.external):
+        if same_gmail_account(address, sender.recipient):
+            raise ConfigError(
+                f"{address} is the GMAIL_ADDRESS account, so its mail would not be a test.",
+                next_action="Set the REHEARSAL_*_SENDER settings to other addresses Mail.app has.",
+            )
+
+
+def _write_placeholders(folder: Path, attachments: list[Attachment]) -> tuple[Path, ...]:
+    folder.mkdir(parents=True, exist_ok=True)
+    return tuple(_write_placeholder(folder, attachment) for attachment in attachments)
 
 
 def _write_placeholder(folder: Path, attachment: Attachment) -> Path:

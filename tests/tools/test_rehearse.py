@@ -5,7 +5,7 @@ import pytest
 from fakes.fake_script_runner import FakeScriptRunner
 from support.corpus import make_corpus_email
 
-from aeca.domain.errors import AecaError
+from aeca.domain.errors import AecaError, ConfigError
 from aeca.settings import RehearsalSenders
 from aeca.tools.corpus import load_corpus
 from aeca.tools.rehearse import (
@@ -143,6 +143,7 @@ def test_attachments_are_placeholder_files_of_the_stated_type_that_are_cleaned_u
     assert path.name == "INV-1.pdf"
     assert recorded.attachment_contents["INV-1.pdf"].startswith(b"%PDF-")
     assert "make new attachment" in recorded.script
+    assert "at after the last paragraph of content" in recorded.script
     assert not path.exists() and not path.parent.exists()
 
 
@@ -321,3 +322,67 @@ def test_no_app_password_setting_or_smtp_code_remains() -> None:
         assert "APP_PASSWORD" not in text and "smtplib" not in text, path
     assert not (root / "tests/fakes/fake_smtp.py").exists()
     assert json.loads(REAL_CORPUS.read_text(encoding="utf-8"))
+
+
+def test_a_reply_gets_the_same_subject_as_the_fallback_message() -> None:
+    _, runner, _ = run(follow_up_corpus())
+
+    assert "set subject of outgoing to messageSubject" in runner.runs[1].script
+
+
+def test_attachments_survive_until_the_whole_run_has_finished() -> None:
+    corpus = (
+        make_corpus_email(
+            id="inv", attachments=[{"name": "INV-1.pdf", "mime_type": "application/pdf"}]
+        ),
+        make_corpus_email(id="after"),
+    )
+    runner = FakeScriptRunner()
+    still_there: list[bool] = []
+
+    rehearse(
+        corpus,
+        sender_over(runner),
+        sleep=lambda _: None,
+        on_sent=lambda _id: still_there.append(Path(runner.runs[0].arguments[5]).exists()),
+    )
+
+    assert still_there == [True, True]
+    assert not Path(runner.runs[0].arguments[5]).parent.exists()
+
+
+def test_two_emails_with_the_same_attachment_name_do_not_overwrite_each_other() -> None:
+    attachment = [{"name": "same.pdf", "mime_type": "application/pdf"}]
+    corpus = (
+        make_corpus_email(id="a", attachments=attachment),
+        make_corpus_email(id="b", attachments=attachment),
+    )
+
+    _, runner, _ = run(corpus)
+
+    assert runner.runs[0].arguments[5] != runner.runs[1].arguments[5]
+
+
+def test_the_run_refuses_when_a_sender_is_the_gmail_account() -> None:
+    sender = MailAppSender(
+        RehearsalSenders(internal="in@mail.test", external="Aeca.Gmail@gmail.com"),
+        recipient="aecagmail@gmail.com",
+        runner=FakeScriptRunner(),
+    )
+
+    with pytest.raises(ConfigError) as raised:
+        rehearse((make_corpus_email(id="a"),), sender, sleep=lambda _: None)
+
+    assert "GMAIL_ADDRESS" in str(raised.value) and raised.value.next_action
+    assert sender.runner.runs == []  # type: ignore[attr-defined]
+
+
+def test_the_run_refuses_when_both_senders_are_the_same_address() -> None:
+    sender = MailAppSender(
+        RehearsalSenders(internal="same@mail.test", external="SAME@mail.test"),
+        recipient=RECIPIENT,
+        runner=FakeScriptRunner(),
+    )
+
+    with pytest.raises(ConfigError, match="same address"):
+        rehearse((make_corpus_email(id="a"),), sender, sleep=lambda _: None)
