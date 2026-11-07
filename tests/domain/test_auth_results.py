@@ -59,3 +59,21 @@ def test_a_result_named_inside_a_comment_is_not_read():
 def test_a_missing_method_is_none(method):
     results = parse_authentication_results(["mx.google.com; none"])
     assert getattr(results, method) is None
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        'mx.google.com; spf=pass smtp.mailfrom="a;dmarc=pass"@evil.example; dmarc=fail',
+        'mx.google.com; spf=pass smtp.mailfrom="a\\";dmarc=pass"@evil.example; dmarc=fail',
+        "mx.google.com; spf=pass (note; dmarc=pass) ; dmarc=fail",
+        "mx.google.com; spf=pass (outer (inner; dmarc=pass) still; dmarc=pass) ; dmarc=fail",
+    ],
+)
+def test_quoted_strings_and_comments_cannot_forge_a_result(header):
+    assert parse_authentication_results([header]).dmarc == "fail"
+
+
+def test_a_property_value_is_never_read_as_a_result():
+    header = "mx.google.com; spf=pass header.i=dmarc=pass; dmarc=fail"
+    assert parse_authentication_results([header]).dmarc == "fail"

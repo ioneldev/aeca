@@ -23,6 +23,10 @@ MODEL_TEXT_LIMIT = 8000
 NAME_LIMIT = 255
 BULK_PRECEDENCES = frozenset({"bulk", "list", "junk"})
 BULK_HEADERS = ("List-Id", "List-Unsubscribe")
+SUBJECT_LIMIT = 500
+SENDER_NAME_LIMIT = 500
+REFERENCES_LIMIT = 2000
+REPLY_TO_LIMIT = 500
 HIGH_X_PRIORITIES = frozenset({"1", "2"})
 AUTOMATED_LOCAL_PARTS = frozenset({"noreply", "no-reply", "mailer-daemon", "postmaster"})
 GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
@@ -86,12 +90,12 @@ def extract_facts(raw: RawEmail, settings: FactSettings) -> EmailFacts:
         label_ids=raw.label_ids,
         received_at=raw.internal_date,
         rfc822_message_id=_header(message, "Message-ID"),
-        references=_header(message, "References"),
+        references=_bounded_optional(_header(message, "References"), REFERENCES_LIMIT),
         sender=sender,
-        sender_name=visible(sender_name),
-        reply_to=reply_to,
+        sender_name=bounded(visible(sender_name), SENDER_NAME_LIMIT),
+        reply_to=_bounded_optional(reply_to, REPLY_TO_LIMIT),
         reply_to_differs=reply_to is not None and reply_to != sender,
-        subject=visible(_header(message, "Subject") or ""),
+        subject=bounded(visible(_header(message, "Subject") or ""), SUBJECT_LIMIT),
         auth=auth,
         internal=_counts_as_internal(sender, auth, settings),
         automated=bulk or _is_automated(message, sender),
@@ -117,22 +121,47 @@ def _canonical_account(address: str) -> str:
     return f"{local}@{domain}"
 
 
+def _bounded_optional(text: str | None, limit: int) -> str | None:
+    return None if text is None else bounded(visible(text), limit)
+
+
+def _raw_header(message: EmailMessage, name: str) -> object | None:
+    """The stdlib parses a header lazily, and a hostile one (`From: a <`) raises from deep inside
+    that parser. Whatever it raises, the header counts as absent: no email may crash extraction."""
+    try:
+        header: object | None = message[name]
+    except Exception:
+        return None
+    return header
+
+
 def _header(message: EmailMessage, name: str) -> str | None:
-    value = message[name]
-    return str(value).strip() or None if value is not None else None
+    value = _raw_header(message, name)
+    if value is None:
+        return None
+    try:
+        return str(value).strip() or None
+    except Exception:
+        return None
 
 
 def _all_headers(message: EmailMessage, name: str) -> list[str]:
-    return [str(value) for value in message.get_all(name, [])]
+    try:
+        return [str(value) for value in message.get_all(name, [])]
+    except Exception:
+        return []
 
 
 def _first_address(message: EmailMessage, header_name: str) -> tuple[str, str]:
     """The display name and the lowercased address, both empty when the header has none."""
-    header = message[header_name]
-    if not isinstance(header, AddressHeader) or not header.addresses:
+    header = _raw_header(message, header_name)
+    try:
+        if not isinstance(header, AddressHeader) or not header.addresses:
+            return "", ""
+        first = header.addresses[0]
+        return first.display_name, first.addr_spec.lower()
+    except Exception:
         return "", ""
-    first = header.addresses[0]
-    return first.display_name, first.addr_spec.lower()
 
 
 def _counts_as_internal(sender: str, auth: AuthResults, settings: FactSettings) -> bool:
@@ -153,7 +182,9 @@ def _on_bulk_list(sender: str, settings: FactSettings) -> bool:
 
 def _has_bulk_headers(message: EmailMessage) -> bool:
     precedence = (_header(message, "Precedence") or "").lower()
-    return precedence in BULK_PRECEDENCES or any(message[name] is not None for name in BULK_HEADERS)
+    return precedence in BULK_PRECEDENCES or any(
+        _raw_header(message, name) is not None for name in BULK_HEADERS
+    )
 
 
 def _is_automated(message: EmailMessage, sender: str) -> bool:
@@ -161,7 +192,7 @@ def _is_automated(message: EmailMessage, sender: str) -> bool:
 
 
 def _declares_auto_submission(message: EmailMessage) -> bool:
-    value = message["Auto-Submitted"]
+    value = _raw_header(message, "Auto-Submitted")
     return value is not None and str(value).split(";")[0].strip().lower() != "no"
 
 
@@ -182,5 +213,5 @@ def _attachments(message: EmailMessage) -> tuple[Attachment, ...]:
 
 
 def _model_text(plain: str | None, html: str | None) -> str:
-    chosen = plain if plain is not None else html_to_text(html or "")
+    chosen = plain if plain and plain.strip() else html_to_text(html or "")
     return bounded(visible(chosen).strip(), MODEL_TEXT_LIMIT)

@@ -6,6 +6,9 @@ from html.parser import HTMLParser
 
 REPLACEMENT_CHARACTER = "�"
 KEPT_CONTROLS = frozenset("\n\t")
+# Cf covers bidi overrides, zero-width characters and tag characters; Zl and Zp are the Unicode
+# line and paragraph separators. All of them can hide or reorder text from a reader.
+ESCAPED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 INVISIBLE_ELEMENTS = frozenset({"script", "style", "head"})
 LINE_BREAKING_ELEMENTS = frozenset(
     {"br", "p", "div", "li", "tr", "table", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6",
@@ -20,17 +23,26 @@ def bounded(text: str, limit: int) -> str:
 
 
 def visible(text: str) -> str:
-    """Writes control characters as \\xNN, keeping newlines and tabs, so a pasted escape sequence
-    can't act on a terminal or hide text from a reader."""
+    """Writes control, format and separator characters as \\xNN, \\uXXXX or \\UXXXXXXXX, keeping
+    newlines and tabs, so pasted text can't act on a terminal or hide from a reader."""
     return "".join(_visible_character(character) for character in text.replace("\r\n", "\n"))
 
 
 def _visible_character(character: str) -> str:
     if _is_lone_surrogate(character):
         return REPLACEMENT_CHARACTER
-    if unicodedata.category(character) == "Cc" and character not in KEPT_CONTROLS:
-        return f"\\x{ord(character):02x}"
+    if unicodedata.category(character) in ESCAPED_CATEGORIES and character not in KEPT_CONTROLS:
+        return _escape(character)
     return character
+
+
+def _escape(character: str) -> str:
+    code_point = ord(character)
+    if code_point <= 0xFF:
+        return f"\\x{code_point:02x}"
+    if code_point <= 0xFFFF:
+        return f"\\u{code_point:04x}"
+    return f"\\U{code_point:08x}"
 
 
 def _is_lone_surrogate(character: str) -> bool:

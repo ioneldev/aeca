@@ -3,7 +3,7 @@
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import SplitResult, parse_qs, urlsplit
 
 SAFELINKS_SUFFIX = ".safelinks.protection.outlook.com"
 URLDEFENSE_V3 = re.compile(r"^https?://urldefense\.com/v3/__(.+)__;", re.IGNORECASE)
@@ -18,6 +18,8 @@ FILE_EXTENSIONS = frozenset(
      "gif", "svg", "html", "htm", "ics", "xml", "json", "mp3", "mp4", "mov"}
 )  # fmt: skip
 MAX_UNWRAP_LAYERS = 3
+MAX_LINKS = 200
+LINK_FIELD_LIMIT = 500
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,12 +40,31 @@ def unwrap(url: str) -> str:
 
 
 def _unwrap_once(url: str) -> str:
-    host = (urlsplit(url).hostname or "").lower()
-    if host.endswith(SAFELINKS_SUFFIX):
-        targets = parse_qs(urlsplit(url).query).get("url")
-        return targets[0] if targets else url
+    inner = _wrapped_target(url)
+    return inner if inner and _is_plain_destination(inner) else url
+
+
+def _wrapped_target(url: str) -> str | None:
+    parts = _split(url)
+    if parts and (parts.hostname or "").lower().endswith(SAFELINKS_SUFFIX):
+        targets = parse_qs(parts.query).get("url")
+        return targets[0] if targets else None
     defended = URLDEFENSE_V3.match(url)
-    return defended.group(1) if defended else url
+    return defended.group(1) if defended else None
+
+
+def _is_plain_destination(url: str) -> bool:
+    """Browsers and urlsplit disagree about `\\` and userinfo, so a target with either could show
+    one host to us and another to the person who clicks."""
+    parts = _split(url)
+    return parts is not None and "\\" not in url and "@" not in parts.netloc
+
+
+def _split(url: str) -> SplitResult | None:
+    try:
+        return urlsplit(url)
+    except ValueError:
+        return None
 
 
 def extract_links(html: str | None, text: str) -> tuple[Link, ...]:
@@ -53,7 +74,15 @@ def extract_links(html: str | None, text: str) -> tuple[Link, ...]:
         if unwrap(url) not in already_linked:
             links.append(Link(text=url, target=unwrap(url), mismatched=False))
             already_linked.add(unwrap(url))
-    return tuple(links)
+    return tuple(_clipped(link) for link in links[:MAX_LINKS])
+
+
+def _clipped(link: Link) -> Link:
+    return Link(
+        text=link.text[:LINK_FIELD_LIMIT],
+        target=link.target[:LINK_FIELD_LIMIT],
+        mismatched=link.mismatched,
+    )
 
 
 def _bare_urls(text: str) -> list[str]:
@@ -106,8 +135,11 @@ class _AnchorCollector(HTMLParser):
 
 
 def _names_another_host(text: str, target: str) -> bool:
-    target_host = _comparable_host(urlsplit(target).hostname)
-    if not target_host or urlsplit(target).scheme not in {"http", "https"}:
+    parts = _split(target)
+    if parts is None or parts.scheme not in {"http", "https"}:
+        return False
+    target_host = _comparable_host(parts.hostname)
+    if not target_host:
         return False
     return any(not _same_site(named_host, target_host) for named_host in _hosts_named_in(text))
 

@@ -341,3 +341,91 @@ def test_facts_are_frozen():
     facts = extract_facts(make_raw(), SETTINGS)
     with pytest.raises(AttributeError):
         facts.internal = True  # type: ignore[misc]
+
+
+def _raw_with_headers(header_block: bytes) -> RawEmail:
+    base = make_raw()
+    return RawEmail(
+        message_id=base.message_id,
+        thread_id=base.thread_id,
+        label_ids=base.label_ids,
+        rfc822=header_block + b"\r\n\r\nbody\r\n",
+        internal_date=base.internal_date,
+    )
+
+
+@pytest.mark.parametrize(
+    "from_header",
+    [b"From: a <", b"From: a@x.com, <", b"From: =?bogus?q?x?= <"],
+)
+def test_an_unparseable_from_gives_an_empty_sender_instead_of_crashing(from_header):
+    facts = extract_facts(_raw_with_headers(from_header), SETTINGS)
+    assert facts.sender == "" and facts.internal is False
+
+
+def test_an_unparseable_reply_to_gives_none_instead_of_crashing():
+    raw = _raw_with_headers(b"From: a@x.com\r\nReply-To: =?bogus?q?x?= <")
+    facts = extract_facts(raw, SETTINGS)
+    assert facts.reply_to is None and facts.reply_to_differs is False
+
+
+def test_unparseable_other_headers_do_not_crash():
+    raw = _raw_with_headers(
+        b"From: a@x.com\r\nMessage-ID: <\r\nSubject: =?bogus?q?x?=\r\nReferences: <\r\n"
+        b"X-AECA-Kind: <\r\nX-AECA-Id: <"
+    )
+    facts = extract_facts(raw, SETTINGS)
+    assert facts.sender == "a@x.com"
+
+
+def test_an_unparseable_link_target_does_not_crash():
+    facts = extract_facts(make_raw(html='<a href="http://[::1">x</a>'), SETTINGS)
+    assert [link.mismatched for link in facts.links] == [False]
+
+
+@pytest.mark.parametrize("name", ["\u202eevil", "a\u200bb"])
+def test_invisible_characters_in_sender_name_and_subject_are_escaped(name):
+    facts = extract_facts(make_raw(sender=f'"{name}" <a@x.com>', subject=name), SETTINGS)
+    assert facts.sender_name == facts.subject
+    assert not any(ord(c) in {0x202E, 0x200B} for c in facts.subject + facts.sender_name)
+
+
+def test_a_line_separator_in_body_text_is_escaped():
+    facts = extract_facts(make_raw(body="a\u2028b"), SETTINGS)
+    assert facts.text == "a\\u2028b"
+
+
+def test_an_empty_plain_part_falls_back_to_the_html_text():
+    facts = extract_facts(make_raw(body="  \n", html="<p>Big newsletter news</p>"), SETTINGS)
+    assert "Big newsletter news" in facts.text
+
+
+def test_links_are_capped_at_the_first_200():
+    anchors = "".join(f'<a href="https://x.example/{n}">l{n}</a>' for n in range(1000))
+    facts = extract_facts(make_raw(html=anchors), SETTINGS)
+    assert len(facts.links) == 200 and facts.links[0].target.endswith("/0")
+
+
+def test_link_text_and_target_are_clipped_to_500_characters():
+    html = f'<a href="https://x.example/{"p" * 2000}">{"t" * 2000}</a>'
+    link = extract_facts(make_raw(html=html), SETTINGS).links[0]
+    assert len(link.text) == 500 and len(link.target) == 500
+
+
+def test_subject_and_sender_name_are_bounded_to_500_characters():
+    facts = extract_facts(
+        make_raw(sender=f'"{"n" * 10000}" <a@x.com>', subject="s" * 10000), SETTINGS
+    )
+    assert len(facts.subject) == 500 and len(facts.sender_name) == 500
+
+
+def test_references_are_bounded_to_2000_characters():
+    raw = make_raw(headers={"References": " ".join(f"<{n}@x.com>" for n in range(2000))})
+    facts = extract_facts(raw, SETTINGS)
+    assert facts.references is not None and len(facts.references) == 2000
+
+
+def test_reply_to_is_bounded_to_500_characters_but_still_differs():
+    facts = extract_facts(make_raw(headers={"Reply-To": f"{'r' * 10000}@x.com"}), SETTINGS)
+    assert facts.reply_to is not None and len(facts.reply_to) == 500
+    assert facts.reply_to_differs is True

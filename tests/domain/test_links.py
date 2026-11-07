@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 import pytest
 
 from aeca.domain.links import Link, extract_links, unwrap
@@ -93,3 +95,35 @@ def test_no_links_at_all():
 def test_anchor_text_inside_nested_markup_is_joined():
     (link,) = extract_links('<a href="https://x.example/"><b>Read</b> <i>more</i></a>', "")
     assert link.text == "Read more"
+
+
+SAFELINKS = "https://eur01.safelinks.protection.outlook.com/?url={}&data=1"
+
+
+@pytest.mark.parametrize(
+    "inner",
+    [
+        "https://good.example\\@evil.example",
+        "https://good.example@evil.example",
+    ],
+)
+def test_a_wrapped_target_with_userinfo_or_backslash_is_not_unwrapped(inner):
+    wrapped = SAFELINKS.format(quote(inner, safe=""))
+    assert unwrap(wrapped) == wrapped
+    assert unwrap(inner) == inner
+
+
+def test_a_deceptive_wrapped_link_stays_mismatched():
+    wrapped = SAFELINKS.format("https%3A%2F%2Fgood.example%40evil.example")
+    links = extract_links(f'<a href="{wrapped}">good.example</a>', "")
+    assert links[0].mismatched is True
+
+
+def test_a_bare_deceptive_link_is_mismatched():
+    links = extract_links('<a href="https://good.example@evil.example/">good.example</a>', "")
+    assert links[0].mismatched is True
+
+
+def test_an_unparseable_target_is_kept_as_not_mismatched():
+    links = extract_links('<a href="http://[::1">x.example</a>', "")
+    assert links == (Link(text="x.example", target="http://[::1", mismatched=False),)

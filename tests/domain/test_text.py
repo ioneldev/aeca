@@ -51,3 +51,20 @@ def test_html_reduction_collapses_whitespace_runs():
 
 def test_unclosed_script_does_not_leak_its_content():
     assert "secret" not in html_to_text("<p>x</p><script>secret")
+
+
+def test_bidi_zero_width_tag_and_separator_characters_are_escaped():
+    assert visible("\u202e") == "\\u202e"
+    assert visible("\u200b") == "\\u200b"
+    assert visible("\u2066x\u2069") == "\\u2066x\\u2069"
+    assert visible("\ufeff") == "\\ufeff"
+    assert visible("\u2028\u2029") == "\\u2028\\u2029"
+    assert visible("\U000e0041") == "\\U000e0041"
+
+
+def test_ordinary_international_text_is_not_changed():
+    assert visible("Jürgen Müller \u2013 日本") == "Jürgen Müller \u2013 日本"
+
+
+def test_a_c1_control_is_written_with_two_hex_digits():
+    assert visible("\x85") == "\\x85"
