@@ -429,3 +429,19 @@ def test_reply_to_is_bounded_to_500_characters_but_still_differs():
     facts = extract_facts(make_raw(headers={"Reply-To": f"{'r' * 10000}@x.com"}), SETTINGS)
     assert facts.reply_to is not None and len(facts.reply_to) == 500
     assert facts.reply_to_differs is True
+
+
+def test_one_unreadable_authentication_header_does_not_hide_googles(monkeypatch):
+    from aeca.domain import facts as facts_module
+
+    class Unreadable:
+        def __str__(self) -> str:
+            raise ValueError("unreadable")
+
+    class Message:
+        def get_all(self, name, default):
+            return [Unreadable(), "mx.google.com; dmarc=fail"]
+
+    assert facts_module._all_headers(Message(), "Authentication-Results") == [
+        "mx.google.com; dmarc=fail"
+    ]

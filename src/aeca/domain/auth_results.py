@@ -24,34 +24,47 @@ def parse_authentication_results(values: Sequence[str]) -> AuthResults:
     return AuthResults(spf=None, dkim=None, dmarc=None)
 
 
+@dataclass(frozen=True, slots=True)
+class _Tokens:
+    segments: list[str]
+    well_formed: bool
+
+
 def _authserv_id(value: str) -> str:
-    server_part = _top_level_segments(value)[0].split()
+    server_part = _tokenise(value).segments[0].split()
     return server_part[0].lower() if server_part else ""
 
 
 def _read_results(value: str) -> AuthResults:
+    tokens = _tokenise(value)
     found: dict[str, str] = {}
-    for segment in _top_level_segments(value)[1:]:
+    for segment in tokens.segments[1:]:
         match = RESULT.match(segment)
         if match:
             found.setdefault(match.group(1).lower(), match.group(2).lower())
+    if not tokens.well_formed:
+        found["dmarc"] = "fail"
     return AuthResults(spf=found.get("spf"), dkim=found.get("dkim"), dmarc=found.get("dmarc"))
 
 
-def _top_level_segments(value: str) -> list[str]:
+def _tokenise(value: str) -> _Tokens:
     """Splits on `;` outside quoted strings and comments (RFC 8601), with comments removed. A
-    quoted local part such as "a;dmarc=pass"@x must not start a result of its own."""
+    quoted local part such as "a;dmarc=pass"@x must not start a result of its own. Anything the
+    grammar doesn't allow makes the header untrustworthy, because a reader that disagrees with
+    Gmail's about where a result starts can be made to read a forged one."""
     segments: list[str] = [""]
     comment_depth = 0
     in_quotes = False
     escaped = False
+    well_formed = True
     for character in value:
         if escaped:
             escaped = False
             if comment_depth == 0:
                 segments[-1] += character
-        elif character == "\\" and (in_quotes or comment_depth):
-            escaped = True
+        elif character == "\\":
+            well_formed = well_formed and (in_quotes or comment_depth > 0)
+            escaped = in_quotes or comment_depth > 0
             if comment_depth == 0:
                 segments[-1] += character
         elif in_quotes:
@@ -63,9 +76,11 @@ def _top_level_segments(value: str) -> list[str]:
                 segments[-1] += " "
         elif character == "(":
             comment_depth = 1
+        elif character == ")":
+            well_formed = False
         elif character == ";":
             segments.append("")
         else:
             in_quotes = character == '"'
             segments[-1] += character
-    return segments
+    return _Tokens(segments, well_formed and not in_quotes and comment_depth == 0 and not escaped)

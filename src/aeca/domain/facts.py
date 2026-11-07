@@ -147,9 +147,17 @@ def _header(message: EmailMessage, name: str) -> str | None:
 
 def _all_headers(message: EmailMessage, name: str) -> list[str]:
     try:
-        return [str(value) for value in message.get_all(name, [])]
+        values = list(message.get_all(name, []))
     except Exception:
         return []
+    return [text for text in (_readable(value) for value in values) if text is not None]
+
+
+def _readable(value: object) -> str | None:
+    try:
+        return str(value)
+    except Exception:
+        return None
 
 
 def _first_address(message: EmailMessage, header_name: str) -> tuple[str, str]:
