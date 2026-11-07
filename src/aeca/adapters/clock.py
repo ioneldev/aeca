@@ -1,9 +1,4 @@
 from datetime import UTC, datetime
-from typing import Protocol
-
-
-class NowProvider(Protocol):
-    def now(self) -> datetime: ...
 
 
 class SystemClock:

@@ -3,9 +3,9 @@
 import json
 from pathlib import Path
 
-from aeca.adapters.clock import NowProvider
 from aeca.adapters.redactor import REDACTED, Redactor
 from aeca.adapters.rotating_log import RotatingLogFile, Rotation
+from aeca.application.ports import Clock
 from aeca.domain.secret import SecretStr
 
 __all__ = ["REDACTED", "JsonlTracer"]
@@ -19,7 +19,7 @@ class JsonlTracer:
         secrets: tuple[SecretStr, ...],
         rotation: Rotation,
         debug_enabled: bool,
-        clock: NowProvider,
+        clock: Clock,
     ) -> None:
         self._redactor = Redactor(secrets)
         self._clock = clock

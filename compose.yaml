@@ -11,6 +11,14 @@ services:
     volumes:
       - aeca-data:/data
     mem_limit: 512m
+    restart: unless-stopped
+    # Long enough for the worst email in hand: three model calls and the Google calls after them.
+    stop_grace_period: 120s
+    # Only the proxy settings the host sets reach the container. An unset one arrives empty, which
+    # AECA reads as unset.
+    environment:
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      EXTRA_CA_CERTS: ${EXTRA_CA_CERTS:-}
 
   # make auth: the one-time Google consent. It writes the refresh token into .env, so .env is
   # mounted writable, and only for this service.

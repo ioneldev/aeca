@@ -1,4 +1,5 @@
 from aeca.domain.labels import (
+    ALL_USER_LABELS,
     AWAITING,
     ERROR,
     FINANCE_LABEL,
@@ -61,3 +62,19 @@ def test_the_urgency_definition_holds_both_lists_and_the_evidence_rule() -> None
     assert "Urgent:" in URGENCY_DEFINITION
     assert "Not urgent:" in URGENCY_DEFINITION
     assert "quote" in URGENCY_DEFINITION
+
+
+def test_the_labels_made_at_startup_are_the_eleven_and_never_spam() -> None:
+    assert ALL_USER_LABELS == (
+        "MEETING_REQUEST",
+        "TASK",
+        "INFO_ONLY",
+        "SALES_OUTREACH",
+        "MARKETING",
+        "URGENT",
+        "Finance",
+        "UNKNOWN",
+        "AECA/processed",
+        "AECA/error",
+        "AECA/awaiting",
+    )

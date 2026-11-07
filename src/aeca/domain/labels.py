@@ -10,6 +10,21 @@ PROCESSED = "AECA/processed"
 ERROR = "AECA/error"
 AWAITING = "AECA/awaiting"
 
+# Gmail refuses a user label named SPAM, so SPAM is not here: its action is the system label.
+ALL_USER_LABELS = (
+    "MEETING_REQUEST",
+    "TASK",
+    "INFO_ONLY",
+    "SALES_OUTREACH",
+    "MARKETING",
+    URGENT_LABEL,
+    FINANCE_LABEL,
+    "UNKNOWN",
+    PROCESSED,
+    ERROR,
+    AWAITING,
+)
+
 
 class ReplyKind(StrEnum):
     NONE = "none"

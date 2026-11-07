@@ -29,3 +29,5 @@ ENV PATH=/app/.venv/bin:$PATH \
 
 USER aeca
 ENTRYPOINT ["aeca"]
+# make start runs the image with no arguments, and make auth overrides this.
+CMD ["run"]

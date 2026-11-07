@@ -1,4 +1,4 @@
-.PHONY: check preflight image auth
+.PHONY: check preflight image auth start stop logs audit
 
 # What CI and a reviewer run. Tests marked live or eval touch the network or cost money, so they
 # never run here.
@@ -13,6 +13,9 @@ check:
 #   make preflight   check Docker, Compose, the daemon, .env and every setting a run needs
 #   make image       build the one image that both compose services use
 #   make auth        one-time Google consent in the browser; writes the refresh token into .env
+#   make start       run AECA in the background; make stop stops it, after the email in hand
+#   make logs        follow the per-email summary lines
+#   make audit       print the audit log
 PREFLIGHT = sh scripts/preflight.sh
 IMAGE = aeca:local
 
@@ -30,3 +33,20 @@ auth:
 	@$(PREFLIGHT) docker env-auth
 	@docker image inspect $(IMAGE) >/dev/null 2>&1 || docker compose build
 	docker compose run --rm --service-ports auth
+
+start:
+	@$(PREFLIGHT) env-run
+	docker compose up -d aeca
+
+stop:
+	@$(PREFLIGHT) env-run
+	docker compose stop aeca
+
+logs:
+	@$(PREFLIGHT) env-run
+	docker compose logs -f aeca
+
+# --no-deps and run, not exec, so the audit prints even when the service is stopped.
+audit:
+	@$(PREFLIGHT) env-run
+	docker compose run --rm --no-deps aeca audit
