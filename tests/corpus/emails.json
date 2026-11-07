@@ -125,7 +125,7 @@
     "sender_role": "external",
     "from_name": "Elena Petrova",
     "subject": "Training session scheduling",
-    "body": "Hi,\n\nWe need to schedule the onboarding training. Would Wednesday or Thursday morning next week suit you? Either day, any time before noon.\n\nThanks,\nElena",
+    "body": "Hi,\n\nWe need to schedule the onboarding training. Would Wednesday next week suit you, or Thursday between 9 and 12? Any 30-minute slot in those windows works.\n\nThanks,\nElena",
     "html": false,
     "headers": {},
     "deliverable": true,
@@ -141,7 +141,7 @@
       "reply": "alternatives",
       "calendar": "all_clash"
     },
-    "note": "Wednesday has an all-day 'Offsite' and Thursday 09:00-17:00 is fully booked, so every proposed window clashes (§4.4). Alternatives are then offered on other days; the approval waits for APPROVE. The all-day event proves it counts as busy."
+    "note": "Wednesday has an all-day 'Offsite', and Thursday has a 09:00-17:00 block, so the whole 09:00-12:00 window is busy (a slot starting at 09:00 or later sits inside the block, whose buffer starts at 08:50). Every proposed time clashes (§4.4). Alternatives are then offered on other days; the approval waits for APPROVE. The all-day event proves it counts as busy."
   },
   {
     "id": "meeting-first-clashes-second-free",
@@ -232,13 +232,14 @@
         "notify_manager",
         "request_approval",
         "create_event",
+        "send_reply",
         "send_reply"
       ],
       "approval": true,
       "reply": "confirmation",
       "calendar": "free"
     },
-    "note": "Escalation (a customer threatening to leave) makes it urgent (§4.2). From an internal sender it gets star, URGENT, a notice to the manager and a drafted reply, and the meeting row adds create_event + confirmation: the two rows add up. The reply field names the meeting's confirmation; the urgent draft is a second reply under the same approval wait. See the report: this combination is not spelled out in the spec."
+    "note": "Escalation (a customer threatening to leave) makes it urgent (§4.2). From an internal sender it gets star, URGENT, a notice to the manager and a drafted reply, and the meeting row adds create_event + confirmation: the two rows add up. One approval request carries every action that waits, so actions lists send_reply twice: the meeting confirmation, then the urgent draft, both under the same approval. The reply field names the primary row's reply (confirmation)."
   },
   {
     "id": "meeting-outside-working-hours",
@@ -361,7 +362,7 @@
     "sender_role": "bulk",
     "from_name": "Brightpath Solutions",
     "subject": "Quick question about your IT costs",
-    "body": "Hello,\n\nWe help companies like yours cut cloud spend by up to 30%. Would you be open to a short call this month? If this isn't relevant, you can unsubscribe at any time.\n\nBest,\nThe Brightpath team",
+    "body": "Hi,\n\nI'm Tom Aldridge at Brightpath Solutions. We built CloudTrim, a tool that cuts cloud spend by up to 30% for companies your size. Could we book a 15-minute call this month so I can show you what it found for a similar business?\n\nBest,\nTom Aldridge\nBrightpath Solutions",
     "html": false,
     "headers": {
       "List-Unsubscribe": "<mailto:unsubscribe@example.com>",
@@ -380,14 +381,14 @@
       "reply": "none",
       "calendar": null
     },
-    "note": "A sales mail-merge with List-Unsubscribe and Precedence: bulk: the label and the archive are the same, but code never replies to an automated or bulk sender, so there is no decline (§4.3). The sales row's 'decline' is skipped, the archive is not."
+    "note": "Sales from a bulk sender: a one-to-one pitch (named person, named product, request for a call) is SALES_OUTREACH even though a mail-merge tool added List-Unsubscribe, Precedence: bulk and List-Id. The bulk headers make it an automated sender (§4.3), so it is archived with no decline."
   },
   {
     "id": "invoice-with-pdf",
     "sender_role": "external",
     "from_name": "Northwind Supplies Accounts",
-    "subject": "Invoice INV-2026-1043 for October",
-    "body": "Hello,\n\nPlease find attached invoice INV-2026-1043 for October deliveries, total EUR 1,284.50, due 30 days from the invoice date. The PDF is attached as Invoice_INV-2026-1043.pdf.\n\nAccounts Receivable\nNorthwind Supplies",
+    "subject": "Invoice INV-2026-1142 for October",
+    "body": "Hello,\n\nPlease find attached invoice INV-2026-1142 for October deliveries, total EUR 1,284.50, due 30 days from the invoice date. The PDF is attached as INV-2026-1142.pdf.\n\nAccounts Receivable\nNorthwind Supplies",
     "html": false,
     "headers": {},
     "deliverable": true,
@@ -402,7 +403,13 @@
       "reply": "none",
       "calendar": null
     },
-    "note": "An invoice is INFO_ONLY, labelled Finance, then archived, with no approval (§4.2). 30 days is not urgent. The corpus fields have no attachment, so the rehearsal sends only the text that names the PDF; see the report."
+    "note": "An invoice is INFO_ONLY, labelled Finance, then archived, with no approval (§4.2). 30 days is not urgent. The email carries a real PDF attachment (INV-2026-1142.pdf, application/pdf): the harness attaches a generated placeholder, so the attachment facts (§4.7 step 1) are exercised.",
+    "attachments": [
+      {
+        "name": "INV-2026-1142.pdf",
+        "mime_type": "application/pdf"
+      }
+    ]
   },
   {
     "id": "receipt-noreply-sender",
@@ -719,7 +726,7 @@
   },
   {
     "id": "forged-internal-dmarc-fail",
-    "sender_role": "external",
+    "sender_role": "internal",
     "from_name": "Priya Raman",
     "subject": "Need the supplier list approved before 5 today",
     "body": "Hi,\n\nI need you to confirm the supplier list so I can send it to procurement before 5 pm today. I'm in meetings all day, so please reply by email.\n\nPriya",
@@ -739,28 +746,7 @@
       "reply": "none",
       "calendar": null
     },
-    "note": "A forged internal address: the From is listed in INTERNAL_SENDERS but DMARC failed, so it never counts as internal (§4.2). It is urgent (deadline today) and a TASK, but gets star and URGENT only: no notice, no draft, and no reply to a DMARC failure (§4.3). It has no links, so the SPAM rule (which needs a link mismatch too) doesn't fire. Undeliverable: a forged DMARC failure can't be sent from a real account."
-  },
-  {
-    "id": "same-subject-task",
-    "sender_role": "internal",
-    "from_name": "Priya Raman",
-    "subject": "Quick question",
-    "body": "Hi,\n\nWhen you have a moment, could you confirm the delivery date for the Henderson order? The customer keeps asking.\n\nPriya",
-    "html": false,
-    "headers": {},
-    "deliverable": true,
-    "expected": {
-      "label": "TASK",
-      "urgent": false,
-      "actions": [
-        "apply_label"
-      ],
-      "approval": false,
-      "reply": "none",
-      "calendar": null
-    },
-    "note": "A TASK from a colleague, not urgent (no deadline). It shares its subject with the next email, so Gmail puts both in one thread. Processing the other email, which is archived, must leave this one in the Inbox (§4.6, §5 case 7)."
+    "note": "A forged internal address: the sender role is internal, so the From is a listed INTERNAL_SENDERS address, but DMARC failed, so it never counts as internal (§4.2). It is urgent (deadline today) and a TASK, but gets star and URGENT only: no notice, no draft, and no reply to a DMARC failure (§4.3). It has no links, so the SPAM rule (which needs a link mismatch too) doesn't fire. Undeliverable: a forged DMARC failure can't be sent from a real account."
   },
   {
     "id": "same-subject-sales",
@@ -783,7 +769,28 @@
       "reply": "decline",
       "calendar": null
     },
-    "note": "Cold sales outreach: SALES_OUTREACH, a decline, then archive (§4.2). The archive applies to this message only, never the thread (§4.6), so the earlier 'Quick question' task stays in the Inbox."
+    "note": "Cold sales outreach: SALES_OUTREACH, a decline, then archive (§4.2). It is sent first, so it is archived while the same-subject task email below is still unprocessed. The archive applies to this message only, never the thread (§4.6), so that task stays in the Inbox."
+  },
+  {
+    "id": "same-subject-task",
+    "sender_role": "external",
+    "from_name": "Priya Raman",
+    "subject": "Quick question",
+    "body": "Hi,\n\nWhen you have a moment, could you confirm the delivery date for the Henderson order? The customer keeps asking.\n\nPriya",
+    "html": false,
+    "headers": {},
+    "deliverable": true,
+    "expected": {
+      "label": "TASK",
+      "urgent": false,
+      "actions": [
+        "apply_label"
+      ],
+      "approval": false,
+      "reply": "none",
+      "calendar": null
+    },
+    "note": "A TASK, not urgent (no deadline). It shares its subject and sender account with the previous email, so Gmail puts both in one thread. The sales email comes first in the file, so it is sent and processed first and archived while this one is still unprocessed; this one must stay in the Inbox (§4.6, §5 case 7)."
   },
   {
     "id": "safelinks-task-html",
