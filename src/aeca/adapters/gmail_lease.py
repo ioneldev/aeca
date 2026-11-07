@@ -36,9 +36,13 @@ class GmailLease:
         found = self._find_lock()
         holding = found[1] if found else None
         outcome = decide_acquisition(holding, request)
-        if outcome is not LeaseOutcome.HELD_BY_ANOTHER:
-            self._write(found[0] if found else None, LeaseHolding(request.copy_id, request.now))
-        return LeaseResult(outcome=outcome, holding=holding)
+        if outcome is LeaseOutcome.HELD_BY_ANOTHER:
+            return LeaseResult(outcome=outcome, holding=holding)
+        mine = LeaseHolding(request.copy_id, request.now)
+        if found is not None:
+            self._write(found[0], mine)
+            return LeaseResult(outcome=outcome, holding=holding)
+        return self._create_lock(mine, outcome)
 
     def still_held(self, copy_id: str) -> bool:
         found = self._find_lock()
@@ -50,6 +54,20 @@ class GmailLease:
             raise LockLost.for_a_lost_lock()
         if not self._write(found[0], LeaseHolding(copy_id, now)):
             raise LockLost.for_a_lost_lock()
+
+    # Two copies can create a lock at the same moment. Every copy then reads the same answer: the
+    # lowest draft id is the lock. The other draft is left alone, because a deletion that races a
+    # new copy is worse than a leftover.
+    def _create_lock(self, mine: LeaseHolding, outcome: LeaseOutcome) -> LeaseResult:
+        self._write(None, mine)
+        created_id = self._lock_draft_id
+        lowest_id = self._lowest_lock_draft_id()
+        if lowest_id == created_id:
+            return LeaseResult(outcome=outcome, holding=None)
+        self._lock_draft_id = None
+        found = self._find_lock()
+        holding = found[1] if found else None
+        return LeaseResult(outcome=LeaseOutcome.HELD_BY_ANOTHER, holding=holding)
 
     def _find_lock(self) -> tuple[str, LeaseHolding | None] | None:
         """The lock draft's id and what it says, None in the holding when its body is unreadable."""
@@ -66,10 +84,11 @@ class GmailLease:
     def _remembered_or_listed_lock(self) -> str | None:
         if self._lock_draft_id is not None:
             return self._lock_draft_id
-        for draft_id in self._listed_draft_ids():
-            if self._subject_of(draft_id) == LOCK_SUBJECT:
-                return draft_id
-        return None
+        return self._lowest_lock_draft_id()
+
+    def _lowest_lock_draft_id(self) -> str | None:
+        lock_ids = [i for i in self._listed_draft_ids() if self._subject_of(i) == LOCK_SUBJECT]
+        return min(lock_ids, default=None)
 
     def _listed_draft_ids(self) -> list[str]:
         ids: list[str] = []

@@ -51,6 +51,10 @@ class CopyLockHeld(Protocol):
 
     def renew(self) -> None: ...
 
+    def renew_if_due(self) -> bool:
+        """Renews when a poll has passed since the last renewal; True when it did."""
+        ...
+
 
 class Heartbeat(Protocol):
     def beat(self) -> None:
@@ -104,14 +108,17 @@ class Service:
 
     def tick(self) -> TickResult:
         results: list[_Result] = []
-        # Outside the try: a lost lock is no outage to back off from, the service must stop.
-        self._deps.copy_lock.ensure_held()
         try:
+            # A lost lock is no outage: LockLost is not a system-wide error, so it ends the run.
+            self._deps.copy_lock.ensure_held()
             self._read_approvals()
             for message_id in self._emails_to_handle():
                 if self._stop.is_set() or _handled(results) == INBOX_MESSAGES_PER_TICK:
                     break
+                self._deps.copy_lock.ensure_held()
                 results.append(self._process(message_id))
+                self._stay_alive_during_a_long_tick()
+            self._deps.copy_lock.ensure_held()
             self._record_the_poll()
         except Exception as error:
             if not ends_the_tick(error):
@@ -122,6 +129,12 @@ class Service:
         self._outages_in_a_row = 0
         self._deps.watch.tick_completed()
         return _tick_result(results, backoff_s=0)
+
+    # A tick of many slow emails outlasts the stale limit. A system-wide error ends the tick before
+    # this runs, so an outage renews nothing, and the health check rightly reports it.
+    def _stay_alive_during_a_long_tick(self) -> None:
+        if self._deps.copy_lock.renew_if_due():
+            self._deps.heartbeat.beat()
 
     def _record_the_poll(self) -> None:
         self._deps.copy_lock.renew()

@@ -27,6 +27,7 @@ class FakeDraftsService:
     stored: dict[str, bytes] = field(default_factory=dict)
     calls: list[str] = field(default_factory=list)
     page_size: int = 100
+    after_create: Callable[["FakeDraftsService"], None] | None = None
     _counter: int = 0
 
     def users(self) -> "FakeDraftsService":
@@ -35,11 +36,14 @@ class FakeDraftsService:
     def drafts(self) -> "FakeDraftsService":
         return self
 
-    def add(self, *, subject: str, body: str = "") -> str:
+    def add(self, *, subject: str, body: str = "", draft_id: str | None = None) -> str:
         mime = EmailMessage()
         mime["Subject"] = subject
         mime.set_content(body or "x")
-        return self._store(mime.as_bytes())
+        if draft_id is None:
+            return self._store(mime.as_bytes())
+        self.stored[draft_id] = mime.as_bytes()
+        return draft_id
 
     def raw_of(self, draft_id: str) -> bytes:
         return self.stored[draft_id]
@@ -53,7 +57,7 @@ class FakeDraftsService:
 
     def create(self, *, userId: str, body: dict[str, Any]) -> _Request:
         self.calls.append("create")
-        return _Request(lambda: {"id": self._store(_raw_in(body))})
+        return _Request(lambda: self._create(body))
 
     def update(self, *, userId: str, id: str, body: dict[str, Any]) -> _Request:
         self.calls.append("update")
@@ -66,6 +70,12 @@ class FakeDraftsService:
     def send(self, **_: Any) -> _Request:
         self.calls.append("send")
         return _Request(lambda: {})
+
+    def _create(self, body: dict[str, Any]) -> dict[str, Any]:
+        created = {"id": self._store(_raw_in(body))}
+        if self.after_create is not None:
+            self.after_create(self)
+        return created
 
     def _store(self, raw: bytes) -> str:
         self._counter += 1

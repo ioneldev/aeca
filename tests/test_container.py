@@ -25,6 +25,7 @@ pytestmark = pytest.mark.live
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_TIMEOUT_S = 1800
 RUN_TIMEOUT_S = 120
+NANOSECONDS_PER_SECOND = 1_000_000_000
 NON_ROOT_USER = "aeca"
 NON_ROOT_UID = "1000"
 SECRET_VARIABLES = ("ANTHROPIC_API_KEY", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN")
@@ -221,3 +222,4 @@ def test_healthcheck_is_defined(image: str) -> None:
 
     assert healthcheck, "the image defines no HEALTHCHECK"
     assert healthcheck["Test"][0] != "NONE"
+    assert healthcheck["StartPeriod"] == 60 * NANOSECONDS_PER_SECOND, "no start period"

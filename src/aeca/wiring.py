@@ -1,13 +1,13 @@
 """Builds the running service out of the settings. The one place that knows every adapter."""
 
 import sys
-import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aeca.adapters.anthropic_client import AnthropicClient
 from aeca.adapters.audit_log import JsonlAuditLog
 from aeca.adapters.clock import SystemClock
 from aeca.adapters.console import JsonConsole
+from aeca.adapters.copy_id_file import load_or_create_copy_id
 from aeca.adapters.google_services import GoogleServices, build_google_services
 from aeca.adapters.heartbeat_file import HeartbeatFile
 from aeca.adapters.models_file import load_models
@@ -129,7 +129,7 @@ def build(settings: Settings) -> Service:
         CopyLockDeps(
             lease=google.lease,
             clock=clock,
-            copy_id=uuid.uuid4().hex,
+            copy_id=load_or_create_copy_id(data_dir),
             poll_seconds=settings.poll_seconds,
             force=settings.force_lock,
         )

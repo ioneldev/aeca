@@ -14,7 +14,7 @@ from aeca import cli
 from aeca.adapters.sqlite_state import SqliteState
 from aeca.domain.actions import Action, Verb
 from aeca.domain.approval import Approval, ApprovalState
-from aeca.domain.errors import ConfigError, CredentialsRevoked
+from aeca.domain.errors import ConfigError, CredentialsRevoked, LockLost
 from aeca.domain.secret import SecretStr
 
 
@@ -338,3 +338,28 @@ def test_health_fails_when_there_is_no_heartbeat_file(
 ) -> None:
     assert cli.main(["health"]) == 1
     assert "heartbeat" in capsys.readouterr().out
+
+
+def test_health_fails_when_the_heartbeat_is_far_in_the_future(health_environment: Path) -> None:
+    _heartbeat_written(health_environment, seconds_ago=-91)
+
+    assert cli.main(["health"]) == 1
+
+
+def test_a_lost_lock_exits_one_with_its_next_action(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    run_environment: None,
+    restored_signal_handlers: None,
+) -> None:
+    class LosesTheLock:
+        def run(self, _stop: threading.Event) -> None:
+            raise LockLost.for_a_lost_lock()
+
+    monkeypatch.setattr(cli, "build_service", lambda _settings: LosesTheLock())
+
+    code = cli.main(["run"])
+
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "no longer holds the inbox lock" in err and "FORCE_LOCK=true" in err

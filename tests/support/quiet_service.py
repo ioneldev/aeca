@@ -39,6 +39,9 @@ class NoCopyLock:
     def renew(self) -> None:
         return None
 
+    def renew_if_due(self) -> bool:
+        return False
+
 
 class NoHeartbeat:
     def beat(self) -> None:

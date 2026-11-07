@@ -5,9 +5,10 @@ redoing work, so a copy that slept and lost the lock does no harm before it noti
 """
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from aeca.application.ports import Clock, Lease
-from aeca.domain.errors import ConfigError, LockLost
+from aeca.domain.errors import ConfigError, EmailError, LockLost, SystemWideError
 from aeca.domain.lease import (
     LeaseOutcome,
     LeaseRequest,
@@ -29,6 +30,7 @@ class CopyLockDeps:
 class CopyLock:
     def __init__(self, deps: CopyLockDeps) -> None:
         self._deps = deps
+        self._last_renewal = deps.clock.now()
 
     def acquire(self) -> None:
         """Raises ConfigError, sending nothing, while another copy's heartbeat is fresh."""
@@ -41,20 +43,43 @@ class CopyLock:
         result = self._deps.lease.acquire(request)
         if result.outcome is LeaseOutcome.HELD_BY_ANOTHER:
             raise _held_by_another(result, request)
+        self._last_renewal = request.now
 
     def ensure_held(self) -> None:
-        if not self._deps.lease.still_held(self._deps.copy_id):
+        """Raises LockLost; any other failure is a system-wide error, to back off from."""
+        try:
+            held = self._deps.lease.still_held(self._deps.copy_id)
+        except EmailError as error:
+            raise _system_wide(error) from error
+        if not held:
             raise LockLost.for_a_lost_lock()
 
     def renew(self) -> None:
-        self._deps.lease.renew(self._deps.copy_id, self._deps.clock.now())
+        now = self._deps.clock.now()
+        try:
+            self._deps.lease.renew(self._deps.copy_id, now)
+        except EmailError as error:
+            raise _system_wide(error) from error
+        self._last_renewal = now
+
+    def renew_if_due(self) -> bool:
+        """Renews once a poll has passed since the last renewal; True when it did."""
+        if self._deps.clock.now() - self._last_renewal < timedelta(seconds=self._deps.poll_seconds):
+            return False
+        self.renew()
+        return True
+
+
+# A failure of the lease's own Gmail calls is about no email, so the whole tick backs off.
+def _system_wide(error: EmailError) -> SystemWideError:
+    return SystemWideError(str(error), next_action=error.next_action)
 
 
 def _held_by_another(result: LeaseResult, request: LeaseRequest) -> ConfigError:
     limit_seconds = int(request.stale_after.total_seconds())
     age = ""
     if result.holding is not None:
-        seconds_old = int((request.now - result.holding.heartbeat).total_seconds())
+        seconds_old = max(0, int((request.now - result.holding.heartbeat).total_seconds()))
         age = f" Its heartbeat is {seconds_old} s old."
     return ConfigError(
         f"Another copy of AECA holds the inbox lock.{age}",

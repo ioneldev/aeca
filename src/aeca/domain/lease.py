@@ -40,11 +40,17 @@ class LeaseResult:
     holding: LeaseHolding | None
 
 
+def is_fresh(heartbeat: datetime, now: datetime, stale_after: timedelta) -> bool:
+    """A heartbeat from the future beyond the stale limit is clock skew gone wrong, not a live
+    copy: it would otherwise hold the lock, or the health check, for ever."""
+    return -stale_after <= now - heartbeat < stale_after
+
+
 def decide_acquisition(holding: LeaseHolding | None, request: LeaseRequest) -> LeaseOutcome:
     if holding is None or holding.copy_id == request.copy_id:
         return LeaseOutcome.ACQUIRED
     if request.force:
         return LeaseOutcome.FORCED
-    if request.now - holding.heartbeat >= request.stale_after:
-        return LeaseOutcome.TOOK_OVER_STALE
-    return LeaseOutcome.HELD_BY_ANOTHER
+    if is_fresh(holding.heartbeat, request.now, request.stale_after):
+        return LeaseOutcome.HELD_BY_ANOTHER
+    return LeaseOutcome.TOOK_OVER_STALE

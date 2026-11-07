@@ -178,3 +178,52 @@ def test_a_google_failure_reaches_the_caller_as_an_aeca_error() -> None:
 
     with pytest.raises(SystemWideError):
         GmailLease(stub).acquire(request())
+
+
+def _body_of(copy_id: str, heartbeat: datetime = NOW) -> str:
+    return f"copy_id: {copy_id}\nheartbeat: {heartbeat.isoformat()}\n"
+
+
+def test_with_two_lock_drafts_the_lowest_id_is_the_lock() -> None:
+    service = FakeDraftsService()
+    service.add(subject=LOCK_SUBJECT, body=_body_of(THEIRS), draft_id="draft-1")
+    service.add(subject=LOCK_SUBJECT, body=_body_of(MINE), draft_id="draft-2")
+    lease = GmailLease(service)
+
+    result = lease.acquire(request(now=NOW + timedelta(seconds=5)))
+
+    assert result.outcome is LeaseOutcome.HELD_BY_ANOTHER
+    assert not lease.still_held(MINE)
+    assert {"update", "delete", "send"}.isdisjoint(service.calls)
+
+
+def test_a_copy_that_lost_the_creation_race_does_not_hold_the_lock() -> None:
+    service = FakeDraftsService()
+
+    def another_copy_created_a_lower_draft(drafts: FakeDraftsService) -> None:
+        drafts.add(subject=LOCK_SUBJECT, body=_body_of(THEIRS), draft_id="draft-0")
+
+    service.after_create = another_copy_created_a_lower_draft
+    lease = GmailLease(service)
+
+    result = lease.acquire(request())
+
+    assert result.outcome is LeaseOutcome.HELD_BY_ANOTHER
+    assert result.holding == LeaseHolding(THEIRS, NOW)
+    assert not lease.still_held(MINE)
+    assert "delete" not in service.calls
+
+
+def test_a_copy_that_won_the_creation_race_holds_the_lock() -> None:
+    service = FakeDraftsService()
+
+    def another_copy_created_a_higher_draft(drafts: FakeDraftsService) -> None:
+        drafts.add(subject=LOCK_SUBJECT, body=_body_of(THEIRS), draft_id="draft-9")
+
+    service.after_create = another_copy_created_a_higher_draft
+    lease = GmailLease(service)
+
+    result = lease.acquire(request())
+
+    assert result.outcome is LeaseOutcome.ACQUIRED
+    assert lease.still_held(MINE)

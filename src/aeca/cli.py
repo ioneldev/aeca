@@ -15,7 +15,7 @@ from aeca.adapters.sqlite_state import StateNeedsMigration, read_awaiting_approv
 from aeca.domain.actions import Action
 from aeca.domain.approval import Approval
 from aeca.domain.errors import AecaError
-from aeca.domain.lease import stale_after
+from aeca.domain.lease import is_fresh, stale_after
 from aeca.settings import load_settings
 from aeca.tools.tool_commands import add_tool_commands
 from aeca.wiring import AUDIT_FILE_NAME, STATE_FILE_NAME, build
@@ -108,13 +108,13 @@ def _health(_arguments: argparse.Namespace) -> int:
     if written_at is None:
         print(f"unhealthy: no readable heartbeat at {path}")
         return 1
-    age = clock.now() - written_at
+    now = clock.now()
     limit = stale_after(_poll_seconds())
-    if age >= limit:
-        seconds_ago, limit_seconds = int(age.total_seconds()), int(limit.total_seconds())
-        print(f"unhealthy: the last poll was {seconds_ago} s ago, the limit is {limit_seconds} s")
-        return 1
-    return 0
+    if is_fresh(written_at, now, limit):
+        return 0
+    limit_seconds = int(limit.total_seconds())
+    print(f"unhealthy: last poll at {written_at.isoformat()}, limit {limit_seconds} s")
+    return 1
 
 
 def _poll_seconds() -> float:
