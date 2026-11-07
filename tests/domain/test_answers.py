@@ -242,3 +242,63 @@ def test_a_bottom_posted_answer_under_an_attribution_line_is_read(
 )
 def test_a_line_is_skipped_only_as_an_attribution_directly_above_a_quote(text: str) -> None:
     assert parse_answer(text) is Answer.UNCLEAR
+
+
+# Fix round 2: an answer word is never skipped, and an inline reply is unclear.
+
+REJECT_ABOVE_A_QUOTE_THEN_APPROVED = (
+    "Reject \u2014 as the client wrote:\n> Tuesday at 3pm?\n\n"
+    "Approved only if they move it to Wednesday.\n"
+)
+INLINE_PER_STEP = (
+    "On Sat, Nov 7, 2026 at 10:00 AM AECA <aeca@gmail.com> wrote:\n"
+    "> If you approve, AECA will:\n"
+    '> 1. create the calendar event "Sync" on Tuesday 10 November 2026, 15:00\u201315:30\n'
+    "Approve this one.\n"
+    "> 2. send this reply:\n"
+    "> | Hello, confirmed for Tuesday.\n"
+    "Reject: do not send that text.\n"
+)
+
+
+def test_a_line_ending_in_wrote_that_starts_with_an_answer_word_is_the_answer() -> None:
+    assert parse_answer("Reject \u2014 as the client wrote:\n> Tuesday at 3pm?\n") is Answer.REJECT
+
+
+# The re-review's probe: its REJECT is now read as the answer line, and the APPROVED written below
+# the quote makes it an inline reply, so it is unclear: the manager's intent is conditional.
+def test_a_reject_followed_below_the_quote_by_approved_is_unclear() -> None:
+    assert parse_answer(REJECT_ABOVE_A_QUOTE_THEN_APPROVED) is Answer.UNCLEAR
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        INLINE_PER_STEP,
+        "Approve this one.\n> 2. send this reply:\nNo, do not send that.",
+        "On reflection, REJECT\nsee what Ana wrote:\n> the request\nApproved items stay",
+        "On Sat, AECA wrote:\n> To answer, reply with\nAPPROVE or REJECT as the first word\n"
+        "> above any quoted text.\nReject.",
+    ],
+    ids=[
+        "inline-per-step",
+        "inline-without-attribution",
+        "answer-word-in-attribution",
+        "rewrapped-quote-line",
+    ],
+)
+def test_an_inline_reply_or_an_answer_word_in_an_attribution_is_unclear(text: str) -> None:
+    assert parse_answer(text) is Answer.UNCLEAR
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "APPROVE\n\nOn Sat, Nov 7, 2026 at 10:00 AM AECA <aeca@gmail.com>\nwrote:\n\n> Hello,\n",
+        "APPROVE\n\nSent with Proton Mail secure email.\n\nOn Saturday, AECA wrote:\n\n> Hello,\n",
+        "On Sat, AECA <aeca@gmail.com> wrote:\n> Hello,\n> x\n\nApprove.\n\n-- \nIonel\n",
+    ],
+    ids=["gmail-top-posted", "proton-top-posted", "bottom-posted-with-signature"],
+)
+def test_an_ordinary_top_or_bottom_posted_answer_is_still_read(text: str) -> None:
+    assert parse_answer(text) is Answer.APPROVE

@@ -1153,3 +1153,74 @@ def test_a_raw_utf8_display_name_does_not_excuse_a_structural_defect(rig: Approv
 
     assert_nothing_executed(rig)
     assert only_line_about(rig, forged).rules == ("answer_ignored:sender_ambiguous",)
+
+
+# --- fix round 2 ---
+
+
+@pytest.mark.parametrize(
+    ("text", "state"),
+    [
+        (
+            "Reject \u2014 as the client wrote:\n> Tuesday at 3pm?\n\n"
+            "Approved only if they move it to Wednesday.\n",
+            ApprovalState.AWAITING,
+        ),
+        (
+            "On Sat, Nov 7, 2026 at 10:00 AM AECA <aeca@gmail.com> wrote:\n"
+            "> If you approve, AECA will:\n"
+            '> 1. create the calendar event "Sync"\n'
+            "Approve this one.\n"
+            "> 2. send this reply:\n"
+            "> | Hello, confirmed for Tuesday.\n"
+            "Reject: do not send that text.\n",
+            ApprovalState.AWAITING,
+        ),
+    ],
+    ids=["reject-above-a-quote", "inline-per-step"],
+)
+def test_the_rereviews_replies_are_never_read_as_approve(
+    rig: ApprovalRig, text: str, state: ApprovalState
+) -> None:
+    opened(rig)
+    rig.answer(text)
+
+    rig.service.process_all()
+
+    assert rig.approval().state is state
+    assert rig.calendar.inserted == []
+    assert "confirmation" not in rig.kinds_sent()
+
+
+# R43: message-level shapes Python reduces to one clean From.
+
+MESSAGE_LEVEL_FORGERIES = [
+    f"From : attacker@example.com\r\nFrom: {MANAGER}\r\n",
+    f"From: {MANAGER}\r\nFrom : attacker@example.com\r\n",
+    f"From: {MANAGER}\rX-y: <attacker@example.com>\r\n",
+    f"From: {MANAGER}\r<attacker@example.com>\r\n",
+    f"From: {MANAGER}\n<attacker@example.com>\r\n",
+]
+
+
+@pytest.mark.parametrize(
+    "from_lines",
+    MESSAGE_LEVEL_FORGERIES,
+    ids=[
+        "from-space-colon-first",
+        "from-space-colon-last",
+        "bare-cr-header-tail",
+        "bare-cr",
+        "bare-lf",
+    ],
+)
+def test_a_message_level_header_defect_is_ignored_even_from_the_managers_domain(
+    rig: ApprovalRig, from_lines: str
+) -> None:
+    opened(rig)
+    forged = reply_with_headers(rig, dmarc_pass_for("example.com") + from_lines)
+
+    rig.tick()
+
+    assert_nothing_executed(rig)
+    assert only_line_about(rig, forged).rules == ("answer_ignored:sender_ambiguous",)

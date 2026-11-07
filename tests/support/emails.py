@@ -44,7 +44,7 @@ def make_raw(
         for name, mime_type in attachments:
             maintype, _, subtype = mime_type.partition("/")
             message.add_attachment(b"%PDF", maintype=maintype, subtype=subtype, filename=name)
-        rfc822 = message.as_bytes()
+        rfc822 = _as_gmail_bytes(message)
     return RawEmail(
         message_id=message_id,
         thread_id=thread_id,
@@ -81,4 +81,10 @@ def _with_raw_body(message: EmailMessage, body_bytes: bytes, charset: str) -> by
     """Bytes are spliced in after the headers, since EmailMessage only takes text it can encode."""
     message["Content-Type"] = f'text/plain; charset="{charset}"'
     message["Content-Transfer-Encoding"] = "8bit"
-    return message.as_bytes() + b"\r\n" + body_bytes
+    return _as_gmail_bytes(message) + b"\r\n" + body_bytes
+
+
+# Gmail hands over every line ending in CRLF (measured), and AECA refuses a bare line end in the
+# headers, so test emails are written the same way.
+def _as_gmail_bytes(message: EmailMessage) -> bytes:
+    return message.as_bytes(policy=message.policy.clone(linesep="\r\n"))

@@ -64,7 +64,7 @@ def test_a_missing_from_gives_an_empty_sender_that_is_never_internal():
         message_id=raw.message_id,
         thread_id=raw.thread_id,
         label_ids=raw.label_ids,
-        rfc822=raw.rfc822.replace(b"From: sender@example.com\n", b""),
+        rfc822=raw.rfc822.replace(b"From: sender@example.com\r\n", b""),
         internal_date=raw.internal_date,
     )
     facts = extract_facts(headerless, SETTINGS)
@@ -569,3 +569,66 @@ def test_a_raw_utf8_name_with_a_structural_defect_is_still_refused(from_line):
 
     assert not facts.single_sender
     assert not facts.internal
+
+
+# Ruling R43: message-level defects and bare line ends make the sender ambiguous, never internal.
+
+MESSAGE_LEVEL_COMPANY_FORGERIES = [
+    "From : attacker@company.com\r\nFrom: boss@company.com\r\n",
+    "From: boss@company.com\r\nFrom : attacker@company.com\r\n",
+    "From: boss@company.com\rX-y: <attacker@company.com>\r\n",
+    "From: boss@company.com\r<attacker@company.com>\r\n",
+    "From: boss@company.com\n<attacker@company.com>\r\n",
+    "From: boss@company.com\r\nX-y: a\nb\r\n",
+]
+
+
+@pytest.mark.parametrize("settings", [BOSS_ONLY, SETTINGS], ids=["listed", "list-empty"])
+@pytest.mark.parametrize("from_lines", MESSAGE_LEVEL_COMPANY_FORGERIES)
+def test_a_message_level_header_defect_makes_the_sender_ambiguous(from_lines, settings):
+    facts = extract_facts(raw_with_headers(COMPANY_PASS + from_lines), settings)
+
+    assert (facts.single_sender, facts.internal) == (False, False)
+
+
+def test_a_bare_line_end_in_the_body_is_not_a_header_defect():
+    raw = raw_with_headers(COMPANY_PASS + "From: boss@company.com\r\n")
+    with_bare_ends = raw.rfc822 + b"line one\nline two\rline three\r\n"
+    facts = extract_facts(
+        RawEmail(
+            message_id=raw.message_id,
+            thread_id=raw.thread_id,
+            label_ids=raw.label_ids,
+            rfc822=with_bare_ends,
+            internal_date=raw.internal_date,
+        ),
+        BOSS_ONLY,
+    )
+
+    assert (facts.single_sender, facts.internal) == (True, True)
+
+
+def test_a_test_email_is_built_with_crlf_line_ends_as_gmail_hands_them_over():
+    header_block = make_raw().rfc822.split(b"\r\n\r\n", 1)[0]
+
+    assert b"\r\n" in header_block
+    assert b"\n" not in header_block.replace(b"\r\n", b"")
+
+
+def test_a_clean_proton_shaped_message_is_still_a_single_internal_sender():
+    proton_pass = (
+        "Authentication-Results: mx.google.com;\r\n"
+        "       dkim=pass header.i=@protonmail.com header.s=protonmail3 header.b=AbCdEf12;\r\n"
+        "       spf=pass smtp.mailfrom=ionel.cimpan@protonmail.com;\r\n"
+        "       dmarc=pass (p=QUARANTINE sp=QUARANTINE dis=NONE) header.from=protonmail.com\r\n"
+    )
+    from_line = "From: =?utf-8?Q?Ionel_C=C3=AEmpan?= <ionel.cimpan@protonmail.com>\r\n"
+    listed = FactSettings("aeca@gmail.com", frozenset({"ionel.cimpan@protonmail.com"}), frozenset())
+
+    facts = extract_facts(raw_with_headers(proton_pass + from_line), listed)
+
+    assert (facts.single_sender, facts.internal, facts.auth.dmarc_domain) == (
+        True,
+        True,
+        "protonmail.com",
+    )

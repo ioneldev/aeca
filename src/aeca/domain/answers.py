@@ -6,6 +6,7 @@ attribution line ("On …, X wrote:") that sits directly above a quote, so an an
 the quote is read too.
 """
 
+import re
 import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
@@ -45,6 +46,7 @@ ANSWER_WORDS = {
 # Invisible characters a mail client may put before the first word; str.isspace() misses them.
 ZERO_WIDTH = frozenset("​‌‍⁠﻿")
 QUOTE_MARK = ">"
+ANSWER_WORD = re.compile(r"\b(?:approve|approved|reject|rejected)\b", re.IGNORECASE)
 ATTRIBUTION_START = "on "
 ATTRIBUTION_END = "wrote:"
 # Gmail wraps a long "On <date> <name> <address> wrote:" before "wrote:"; three lines cover it.
@@ -52,10 +54,11 @@ MAX_ATTRIBUTION_LINES = 3
 
 
 def parse_answer(text: str) -> Answer:
-    line = _first_unquoted_line(text)
-    if line is None:
+    lines = [_without_leading_blanks(line) for line in text.splitlines()]
+    position = _answer_line(lines)
+    if position is None or _an_inline_reply_follows(lines, position):
         return Answer.UNCLEAR
-    return ANSWER_WORDS.get(_first_word(line).casefold(), Answer.UNCLEAR)
+    return ANSWER_WORDS.get(_first_word(lines[position]).casefold(), Answer.UNCLEAR)
 
 
 def answer_of(raw: RawEmail) -> Answer:
@@ -104,8 +107,8 @@ def _domain_of(address: str) -> str:
     return address.strip().lower().rpartition("@")[2]
 
 
-def _first_unquoted_line(text: str) -> str | None:
-    lines = [_without_leading_blanks(line) for line in text.splitlines()]
+def _answer_line(lines: list[str]) -> int | None:
+    """The index of the first line not quoted with `>` and not an attribution."""
     index = 0
     while index < len(lines):
         content = lines[index]
@@ -113,20 +116,20 @@ def _first_unquoted_line(text: str) -> str | None:
         if attribution_end is not None:
             index = attribution_end + 1
         elif content and not content.startswith(QUOTE_MARK):
-            return content
+            return index
         else:
             index += 1
     return None
 
 
 # Only a line that ends in "wrote:", or one that starts with "On " and wraps onto the line that
-# does, is ever skipped, and only when a quote follows. An answer written that way ("Approve, as
-# you wrote:") then reads as unclear, which is the safe side: it gets the help reply.
+# does, is ever skipped, only when a quote follows, and never when any of its lines holds an
+# answer word: "Reject - as the client wrote:" is read as the answer line.
 def _attribution_ending(lines: list[str], start: int) -> int | None:
     """The index of the attribution's last line, when one starts at `start`."""
     for end in range(start, min(start + MAX_ATTRIBUTION_LINES, len(lines))):
         line = lines[end]
-        if not line or line.startswith(QUOTE_MARK):
+        if not line or line.startswith(QUOTE_MARK) or ANSWER_WORD.search(line):
             return None
         if line.rstrip().lower().endswith(ATTRIBUTION_END):
             starts_like_one = end == start or lines[start].lower().startswith(ATTRIBUTION_START)
@@ -137,6 +140,21 @@ def _attribution_ending(lines: list[str], start: int) -> int | None:
 def _a_quote_follows(lines: list[str], end: int) -> bool:
     following = next((line for line in lines[end + 1 :] if line), "")
     return following.startswith(QUOTE_MARK)
+
+
+# A reply written between the request's quoted lines may answer each step differently, so one
+# answer cannot stand for the whole approval: text after a quote block that follows the answer
+# makes the reply unclear. The quote and attribution of a reply written above them are fine.
+def _an_inline_reply_follows(lines: list[str], answer: int) -> bool:
+    quote_seen = False
+    for line in lines[answer + 1 :]:
+        if not line:
+            continue
+        if line.startswith(QUOTE_MARK):
+            quote_seen = True
+        elif quote_seen:
+            return True
+    return False
 
 
 def _without_leading_blanks(line: str) -> str:

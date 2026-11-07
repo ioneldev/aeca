@@ -3,6 +3,8 @@
 Pure code: nothing here asks the model or the network anything.
 """
 
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from email.errors import UndecodableBytesDefect
@@ -34,6 +36,8 @@ AUTOMATED_LOCAL_PARTS = frozenset({"noreply", "no-reply", "mailer-daemon", "post
 GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
 CANONICAL_GMAIL_DOMAIN = "gmail.com"
 MISSING_DEFECTS = "the header records no defects attribute"
+HEADER_BLOCK_END = b"\r\n\r\n"
+BARE_LINE_END = re.compile(rb"\r(?!\n)|(?<!\r)\n")
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +92,7 @@ def extract_facts(raw: RawEmail, settings: FactSettings) -> EmailFacts:
     _, reply_to_address = _first_address(message, "Reply-To")
     reply_to = reply_to_address or None
     auth = parse_authentication_results(_all_headers(message, "Authentication-Results"))
-    single_sender = _has_a_single_sender(message)
+    single_sender = _headers_are_clean(raw, message) and _has_a_single_sender(message)
     bulk = _is_bulk(message, sender, settings)
     plain, html = body_text(message)
     return EmailFacts(
@@ -181,6 +185,24 @@ def _first_address(message: EmailMessage, header_name: str) -> tuple[str, str]:
         return "", ""
 
 
+# Ruling R43: Python can drop a second From before the header parser sees it, as a `From :` line
+# (a defect on the message alone) or a line split off by a bare CR (no defect anywhere). Every real
+# delivered message measured had no message defect and no bare line end in its headers.
+def _headers_are_clean(raw: RawEmail, message: EmailMessage) -> bool:
+    if not _only_undecodable_bytes(message.defects):
+        return False
+    return BARE_LINE_END.search(_header_block(raw.rfc822)) is None
+
+
+def _header_block(rfc822: bytes) -> bytes:
+    end = rfc822.find(HEADER_BLOCK_END)
+    return rfc822 if end == -1 else rfc822[:end]
+
+
+def _only_undecodable_bytes(defects: Sequence[object]) -> bool:
+    return all(isinstance(defect, UndecodableBytesDefect) for defect in defects)
+
+
 # A structural defect means the parser dropped part of the header to find an address (for
 # example `boss@x <attacker@x>`), so the address read may not be the one Gmail judged DMARC for.
 # Undecodable bytes alone are a raw UTF-8 display name, which some clients send unencoded: they are
@@ -194,7 +216,7 @@ def _has_a_single_sender(message: EmailMessage) -> bool:
         # The header registry mixes BaseHeader, which owns `defects`, into every header class; the
         # stubs don't say so. A header without it counts as defective.
         defects: tuple[object, ...] = getattr(header, "defects", (MISSING_DEFECTS,))
-        if not all(isinstance(defect, UndecodableBytesDefect) for defect in defects):
+        if not _only_undecodable_bytes(defects):
             return False
         if len(header.addresses) != 1:
             return False
