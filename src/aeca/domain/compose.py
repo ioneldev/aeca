@@ -95,6 +95,7 @@ def _approval_request(request: ComposeRequest) -> OutgoingMessage:
             steps=tuple(_request_step(action, request) for action in args.actions),
             outside_work_hours=args.outside_work_hours,
             urgent=any(_is_urgent_reply(action) for action in args.actions),
+            urgent_quote=_urgent_quote(args.actions),
         )
     )
 
@@ -118,6 +119,12 @@ def _headline(actions: tuple[Action, ...], facts: EmailFacts) -> str:
         args = first.args
         return event_headline(args["title"], _slot(args), ZoneInfo(args["zone"]))
     return reply_headline(first.args.get("template", ""), facts)
+
+
+def _urgent_quote(actions: tuple[Action, ...]) -> str:
+    return next(
+        (action.args.get("quote", "") for action in actions if _is_urgent_reply(action)), ""
+    )
 
 
 def _is_urgent_reply(action: Action) -> bool:

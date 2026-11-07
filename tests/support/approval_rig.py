@@ -128,15 +128,18 @@ class ApprovalRig:
                     account_address=ACCOUNT, manager_address=self.options.manager_address
                 ),
                 manager_address=self.manager_or_account,
-                fact_settings=FactSettings(
-                    account_address=ACCOUNT,
-                    internal_senders=self.options.internal_senders,
-                    bulk_senders=frozenset(),
-                ),
+                fact_settings=self.service_fact_settings(),
             )
         )
         inbox.use_approvals(service)
         return service
+
+    def service_fact_settings(self) -> FactSettings:
+        return FactSettings(
+            account_address=ACCOUNT,
+            internal_senders=self.options.internal_senders,
+            bulk_senders=frozenset(),
+        )
 
     # --- the flow ---
 

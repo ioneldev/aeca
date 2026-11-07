@@ -10,7 +10,7 @@ from pathlib import Path
 from aeca.adapters.clock import SystemClock
 from aeca.adapters.env_file import set_env_value
 from aeca.adapters.google_auth import ConsentRequest, run_consent
-from aeca.adapters.sqlite_state import SqliteState
+from aeca.adapters.sqlite_state import StateNeedsMigration, read_awaiting_approvals
 from aeca.domain.actions import Action
 from aeca.domain.approval import Approval
 from aeca.domain.errors import AecaError
@@ -104,13 +104,18 @@ def _audit(_arguments: argparse.Namespace) -> int:
     return 0
 
 
-# Reads the state file alone, like the audit, and never creates it.
+# Reads the state file alone, like the audit, and never creates, migrates or writes it: AECA may be
+# running beside it.
 def _approvals(_arguments: argparse.Namespace) -> int:
     path = _data_dir() / STATE_FILE_NAME
     if not path.exists():
         print(f"No approvals yet: {path} does not exist.")
         return 0
-    waiting = SqliteState(path).approvals_awaiting()
+    try:
+        waiting = read_awaiting_approvals(path)
+    except StateNeedsMigration:
+        print("The state file is from an older AECA: start AECA once to migrate the state file.")
+        return 0
     if not waiting:
         print("No approval is waiting.")
         return 0

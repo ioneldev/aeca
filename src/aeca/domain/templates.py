@@ -83,6 +83,8 @@ class ApprovalRequest:
     steps: tuple[RequestStep, ...]
     outside_work_hours: bool
     urgent: bool
+    # The text that makes the email urgent; an approval recorded before it was kept has none.
+    urgent_quote: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +102,8 @@ class EventDetails:
     zone: ZoneInfo
     summary: str
     approval_id: str
+    # The proposed times as the requester wrote them, each in quotes.
+    quoted_times: str = ""
 
 
 def reply_subject(subject: str) -> str:
@@ -207,7 +211,7 @@ def approval_request(request: ApprovalRequest) -> OutgoingMessage:
     """Asks the manager to approve the steps, in a thread of its own (spec §4.5)."""
     notes = (
         *((OUTSIDE_WORK_HOURS_NOTE,) if request.outside_work_hours else ()),
-        *((URGENT_NOTE,) if request.urgent else ()),
+        *((_urgent_note(request.urgent_quote),) if request.urgent else ()),
     )
     body = "\n\n".join(
         (
@@ -262,12 +266,14 @@ def alert(notice: AlertNotice) -> OutgoingMessage:
 def event_description(details: EventDetails) -> str:
     """What the calendar event says about where it came from (spec §4.4)."""
     facts = details.facts
+    proposed = (f"Proposed as: {_one_line(details.quoted_times)}",) if details.quoted_times else ()
     text = "\n".join(
         (
             f"Requested by: {_sender_line(facts)}",
             f"Subject: {_one_line(facts.subject)}",
             f"Summary: {_one_line(details.summary)}",
             f"Time: {describe_slot(details.slot, details.zone)}",
+            *proposed,
             f"Approval: {details.approval_id}",
             "Created by AECA after the manager approved it.",
         )
@@ -310,6 +316,12 @@ def _reply(request: ReplyRequest, *, kind: str, paragraphs: Sequence[str]) -> Ou
         in_reply_to=facts.rfc822_message_id,
         references=_references(facts),
     )
+
+
+def _urgent_note(quote: str) -> str:
+    if not quote.strip():
+        return URGENT_NOTE
+    return f'{URGENT_NOTE}\nWhy it is urgent: "{_one_line(quote)}"'
 
 
 def _source_details(facts: EmailFacts, summary: str) -> str:

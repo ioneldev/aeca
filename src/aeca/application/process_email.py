@@ -10,6 +10,7 @@ labelled processed, so even an email that already left the Inbox is finished.
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 
 from aeca.application.budget import Budget, Spend
 from aeca.application.executor import Executor
@@ -27,9 +28,9 @@ from aeca.application.ports import (
 )
 from aeca.application.state_ports import AuditLog, StateStore
 from aeca.domain.actions import Action, ActionStatus
-from aeca.domain.approval import ApprovalState
+from aeca.domain.approval import Approval, ApprovalState
 from aeca.domain.audit import ActionSummary, AuditLine, Outcome, action_summary
-from aeca.domain.decision import Decision
+from aeca.domain.decision import DecidedBy, Decision
 from aeca.domain.errors import EmailError
 from aeca.domain.facts import EmailFacts, FactSettings, extract_facts
 from aeca.domain.ids import approval_id
@@ -45,6 +46,7 @@ from aeca.domain.text import bounded
 MAX_TRIES = 3
 ERROR_TEXT_LIMIT = 300
 INVITATION_ON_CALENDAR = "invitation_on_calendar"
+LATE_ANSWER = "late_answer"
 UNFINISHED_STATUSES = frozenset({ActionStatus.PENDING, ActionStatus.EXECUTING})
 
 
@@ -150,7 +152,7 @@ class InboxProcessor:
         thread = tuple(self._deps.mailbox.thread_summaries(facts.thread_id))
         incoming = _Incoming(facts=facts, thread=thread)
         if self._is_approval_thread(incoming):
-            self._label_if_its_approval_closed(facts)
+            self._settle_if_nobody_reads_it(facts)
             return None
         return self._finish(incoming, spend_before)
 
@@ -161,16 +163,19 @@ class InboxProcessor:
             return True
         return self._deps.store.approval_by_request_thread(incoming.facts.thread_id) is not None
 
-    # The approval loop reads only the threads of open approvals, so an answer that arrives after
-    # its approval closed is read by nobody: labelled here, it stops coming back every tick.
-    def _label_if_its_approval_closed(self, facts: EmailFacts) -> None:
+    # The approval loop reads only the threads of awaiting approvals. An answer in any other
+    # approval thread (decided, or unknown to a wiped store) is read by nobody: audited and
+    # labelled here once, it stops being fetched on every tick.
+    def _settle_if_nobody_reads_it(self, facts: EmailFacts) -> None:
         approval = self._deps.store.approval_by_request_thread(facts.thread_id)
-        if approval is None or approval.is_open:
+        if approval is not None and approval.state is ApprovalState.AWAITING:
             return
+        # One the approval loop already read was audited there; only its label is missing.
+        if not self._deps.store.answer_seen(facts.message_id):
+            self._deps.audit.write(
+                _late_answer_line(facts, now=self._deps.clock.now(), approval=approval)
+            )
         self._mark_processed(facts)
-        self._deps.tracer.event(
-            "answer_after_close", message_id=facts.message_id, approval_id=approval.id
-        )
 
     def _finish(self, incoming: _Incoming, spend_before: Spend) -> AuditLine:
         facts = incoming.facts
@@ -355,6 +360,28 @@ def _has_an_unapproved_reply(thread: tuple[MessageSummary, ...]) -> bool:
     return any(
         SENT in summary.label_ids and summary.aeca_kind in AUTOMATIC_REPLY_KINDS
         for summary in thread
+    )
+
+
+def _late_answer_line(facts: EmailFacts, *, now: datetime, approval: Approval | None) -> AuditLine:
+    return AuditLine(
+        time=now,
+        message_id=facts.message_id,
+        thread_id=facts.thread_id,
+        sender=facts.sender,
+        subject=facts.subject,
+        label="",
+        urgent=False,
+        decided_by=DecidedBy.RULE.value,
+        rules=(LATE_ANSWER,),
+        actions=(),
+        approval_id=None if approval is None else approval.id,
+        approval_state=None if approval is None else approval.state.value,
+        outcome=Outcome.IGNORED,
+        error=None,
+        tokens_in=0,
+        tokens_out=0,
+        usd=Decimal(0),
     )
 
 

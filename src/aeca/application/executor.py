@@ -173,7 +173,7 @@ class Executor:
             candidate = event_id(source.message_id, attempt)
             found = calendar.get_event(candidate)
             if found is None:
-                calendar.insert_event(self._new_event(record, source, candidate))
+                calendar.insert_event(self._new_event(record, source, new_id=candidate))
                 found = calendar.get_event(candidate)
             if _is_live(found):
                 return _Performed(ref=candidate)
@@ -188,7 +188,7 @@ class Executor:
             next_action="Check the calendar: something deletes the events AECA creates",
         )
 
-    def _new_event(self, record: ActionRecord, source: EmailFacts, new_id: str) -> NewEvent:
+    def _new_event(self, record: ActionRecord, source: EmailFacts, *, new_id: str) -> NewEvent:
         args = record.action.args
         slot = Interval(datetime.fromisoformat(args["start"]), datetime.fromisoformat(args["end"]))
         details = EventDetails(
@@ -197,6 +197,8 @@ class Executor:
             zone=ZoneInfo(args["zone"]),
             summary=self._summary_of_approval(record.approval_id),
             approval_id=record.approval_id or "",
+            # An event action recorded before the quoted times were kept has none.
+            quoted_times=args.get("quoted", ""),
         )
         return NewEvent(
             id=new_id, title=args["title"], description=event_description(details), interval=slot

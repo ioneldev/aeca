@@ -85,6 +85,41 @@ CREATE TABLE spend (day TEXT PRIMARY KEY, usd TEXT NOT NULL);
 _ACTION_COLUMNS = "key, verb, args_json, source_message_id, approval_id, status, ref"
 
 
+class StateNeedsMigration(AecaError):
+    """The state file is from an older AECA. Only a running AECA migrates it."""
+
+
+def read_awaiting_approvals(path: Path) -> list[Approval]:
+    """For `aeca approvals`, beside a running AECA: the file is opened read-only, so it is never
+    created, migrated or written to."""
+    try:
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error as error:
+        raise _unusable(path, error) from error
+    try:
+        connection.row_factory = sqlite3.Row
+        _require_current_schema(connection, path)
+        return _select_approvals(connection, ApprovalState.AWAITING)
+    except sqlite3.Error as error:
+        raise _unusable(path, error) from error
+    finally:
+        connection.close()
+
+
+def _require_current_schema(connection: sqlite3.Connection, path: Path) -> None:
+    found = connection.execute("PRAGMA user_version").fetchone()[0]
+    if 0 < found < SCHEMA_VERSION:
+        raise StateNeedsMigration(
+            f"{path} has schema version {found}, older than this AECA's {SCHEMA_VERSION}",
+            next_action="Start AECA once to migrate the state file",
+        )
+    if found != SCHEMA_VERSION:
+        raise AecaError(
+            f"{path} has schema version {found}, and this AECA reads version {SCHEMA_VERSION}",
+            next_action="Run the AECA release that wrote it",
+        )
+
+
 class SqliteState:
     def __init__(self, path: Path) -> None:
         try:
@@ -351,10 +386,7 @@ class SqliteState:
         return self._approvals_in(ApprovalState.APPROVED)
 
     def _approvals_in(self, state: ApprovalState) -> list[Approval]:
-        rows = self._connection.execute(
-            "SELECT * FROM approvals WHERE state = ? ORDER BY sequence", (state.value,)
-        ).fetchall()
-        return [_approval_from(row) for row in rows]
+        return _select_approvals(self._connection, state)
 
     # holds
 
@@ -433,6 +465,13 @@ class SqliteState:
             "SELECT usd FROM spend WHERE day = ?", (day.isoformat(),)
         ).fetchone()
         return Decimal(0) if row is None else Decimal(row["usd"])
+
+
+def _select_approvals(connection: sqlite3.Connection, state: ApprovalState) -> list[Approval]:
+    rows = connection.execute(
+        "SELECT * FROM approvals WHERE state = ? ORDER BY sequence", (state.value,)
+    ).fetchall()
+    return [_approval_from(row) for row in rows]
 
 
 def _unusable(path: Path, error: sqlite3.Error) -> AecaError:

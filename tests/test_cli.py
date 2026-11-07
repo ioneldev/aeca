@@ -1,5 +1,6 @@
 import os
 import signal
+import sqlite3
 import threading
 from collections.abc import Iterator
 from dataclasses import replace
@@ -268,3 +269,23 @@ def test_approvals_with_no_state_file_says_so_and_creates_none(
     assert code == 0
     assert out.count("\n") == 1 and "state.db" in out
     assert not (approvals_environment / "state.db").exists()
+
+
+def test_approvals_never_migrates_an_older_state_file(
+    approvals_environment: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = approvals_environment / "state.db"
+    SqliteState(path).approval_save(awaiting_approval("a-1"))
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA user_version = 2")
+    connection.commit()
+    connection.close()
+    before = path.read_bytes()
+
+    code = cli.main(["approvals"])
+
+    assert code == 0
+    assert capsys.readouterr().out == (
+        "The state file is from an older AECA: start AECA once to migrate the state file.\n"
+    )
+    assert path.read_bytes() == before

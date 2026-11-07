@@ -462,6 +462,37 @@ def raw_with_headers(header_lines: str) -> RawEmail:
     )
 
 
+# Review C1: Python reduces each of these to the single address boss@example.com, keeping only a
+# defect to show it dropped the rest. Gmail may judge DMARC on another part of the header.
+DEFECTIVE_FROM_LINES = [
+    "From: boss@example.com <attacker@example.com>\r\n",
+    "From: <boss@example.com> attacker@example.com\r\n",
+    "From: boss@example.com (Boss) <attacker@example.com>\r\n",
+    "From: Boss <boss@example.com>attacker@example.com\r\n",
+    "From: boss@example.com;attacker@example.com\r\n",
+    "From: boss@example.com\r\n\t<attacker@example.com>\r\n",
+]
+DEFECTIVE_FROM_IDS = ["addr-then-angle", "angle-then-addr", "comment-then-angle", "angle-glued",
+                      "semicolon", "folded"]  # fmt: skip
+LEGITIMATE_FROM_LINES = [
+    "From: boss@example.com\r\n",
+    "From: Boss <boss@example.com>\r\n",
+    'From: "Boss, The" <boss@example.com>\r\n',
+    "From: =?utf-8?Q?Ionel_C=C3=AEmpan?= <boss@example.com>\r\n",
+    "From: boss@example.com (Boss)\r\n",
+    'From: "A display name long enough to be folded"\r\n <boss@example.com>\r\n',
+    "From: <boss@example.com>\r\n",
+]
+
+
+@pytest.mark.parametrize("header_lines", LEGITIMATE_FROM_LINES)
+def test_every_ordinary_from_is_a_single_sender(header_lines):
+    facts = extract_facts(raw_with_headers(header_lines), SETTINGS)
+
+    assert facts.single_sender
+    assert facts.sender == "boss@example.com"
+
+
 def test_one_from_with_one_address_is_a_single_sender():
     assert extract_facts(make_raw(sender='"Boss" <boss@example.com>'), SETTINGS).single_sender
 
@@ -474,8 +505,36 @@ def test_one_from_with_one_address_is_a_single_sender():
         "From: Team: boss@example.com, attacker@evil.example;\r\n",
         "From: \r\n",
         "",
+        *DEFECTIVE_FROM_LINES,
     ],
-    ids=["two-addresses", "two-from-headers", "group", "empty", "none"],
+    ids=["two-addresses", "two-from-headers", "group", "empty", "none", *DEFECTIVE_FROM_IDS],
 )
 def test_anything_else_is_not_a_single_sender(header_lines):
     assert not extract_facts(raw_with_headers(header_lines), SETTINGS).single_sender
+
+
+# Ruling R40: an ambiguous From never counts as internal, however its DMARC result reads.
+
+COMPANY_PASS = "Authentication-Results: mx.google.com; dmarc=pass header.from=company.com\r\n"
+AMBIGUOUS_COMPANY_FROM_LINES = [
+    "From: boss@company.com, attacker@evil.example\r\n",
+    "From: boss@company.com\r\nFrom: attacker@evil.example\r\n",
+    "From: boss@company.com <attacker@company.com>\r\n",
+    "From: boss@company.com;attacker@company.com\r\n",
+    "From: boss@company.com\r\n\t<attacker@company.com>\r\n",
+]
+
+
+@pytest.mark.parametrize("settings", [BOSS_ONLY, SETTINGS], ids=["listed", "list-empty"])
+@pytest.mark.parametrize("from_lines", AMBIGUOUS_COMPANY_FROM_LINES)
+def test_an_ambiguous_from_never_counts_as_internal(from_lines, settings):
+    facts = extract_facts(raw_with_headers(COMPANY_PASS + from_lines), settings)
+
+    assert facts.auth.dmarc == "pass"
+    assert not facts.internal
+
+
+def test_a_single_listed_sender_with_dmarc_pass_is_still_internal():
+    facts = extract_facts(raw_with_headers(COMPANY_PASS + "From: boss@company.com\r\n"), BOSS_ONLY)
+
+    assert facts.internal

@@ -204,3 +204,41 @@ def test_a_manager_reply_whose_sender_is_ambiguous_does_not_count() -> None:
 
     assert not counts_as_answer(message, WITH_MANAGER)
     assert why_not_an_answer(message, WITH_MANAGER) == "sender_ambiguous"
+
+
+# Bottom-posting: an attribution line directly above a quote is not the answer (controller ruling).
+
+
+@pytest.mark.parametrize(
+    ("text", "answer"),
+    [
+        (
+            "On Sat, 7 Nov 2026 at 10:00, AECA <aeca@gmail.com> wrote:\n> Hello,\n\nAPPROVE",
+            Answer.APPROVE,
+        ),
+        ("AECA <aeca@gmail.com> wrote:\n>\n> | Approve this today.\n\nReject.", Answer.REJECT),
+        (
+            "On Sat, Nov 7, 2026 at 10:00 AM AECA <aeca@gmail.com>\nwrote:\n\n> Hello,\n\nApproved",
+            Answer.APPROVE,
+        ),
+        ("Le sam. 7 nov. 2026, AECA a wrote:\n> Hello\nREJECTED", Answer.REJECT),
+    ],
+    ids=["on-date-name-wrote", "name-wrote", "gmail-wrapped", "ends-in-wrote"],
+)
+def test_a_bottom_posted_answer_under_an_attribution_line_is_read(
+    text: str, answer: Answer
+) -> None:
+    assert parse_answer(text) is answer
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Peter wrote:\nAPPROVE",
+        "On second thought\nAPPROVE",
+        "On Monday we meet\nAPPROVE\n> quoted",
+    ],
+    ids=["wrote-without-a-quote", "on-without-wrote", "on-line-not-an-attribution"],
+)
+def test_a_line_is_skipped_only_as_an_attribution_directly_above_a_quote(text: str) -> None:
+    assert parse_answer(text) is Answer.UNCLEAR

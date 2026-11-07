@@ -7,7 +7,7 @@ from support.emails import make_raw
 from support.facts import ACCOUNT_ADDRESS, make_facts
 
 from aeca.domain.actions import Action, Verb
-from aeca.domain.decision import DecidedBy, Decision, Meeting
+from aeca.domain.decision import DecidedBy, Decision, Meeting, Window
 from aeca.domain.facts import EmailFacts, FactSettings, extract_facts
 from aeca.domain.labels import Label, ReplyKind
 from aeca.domain.meeting_outcome import (
@@ -505,3 +505,27 @@ def test_the_event_and_its_confirmation_are_bound_to_the_slot_and_nothing_else_i
 
     assert bound == [True, True, False]
     assert not any(is_bound_to_the_slot(action) for action in alternatives.for_approval)
+
+
+def test_the_urgent_draft_carries_the_quote_that_makes_the_email_urgent() -> None:
+    chosen = replace(
+        decision(Label.TASK, urgent=True, urgent_draft=DRAFT), urgent_quote="the server is down"
+    )
+
+    [draft] = plan(chosen, facts=INTERNAL).for_approval
+
+    assert (draft.args["text"], draft.args["quote"]) == (DRAFT, "the server is down")
+
+
+def test_the_event_carries_the_quoted_times() -> None:
+    windows = (
+        Window(SLOT.start, None, "Tuesday at 3pm"),
+        Window(slot_at(11, 9).start, None, "or Wednesday morning"),
+    )
+    meeting = Meeting(title="Sync", duration_minutes=None, windows=windows)
+
+    [event, _confirmation] = plan(
+        decision(Label.MEETING_REQUEST, meeting=meeting), meeting=SlotFree(SLOT, False)
+    ).for_approval
+
+    assert event.args["quoted"] == '"Tuesday at 3pm"; "or Wednesday morning"'

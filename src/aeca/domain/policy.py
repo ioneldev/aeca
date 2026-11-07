@@ -250,7 +250,12 @@ class _Planner:
     def _reply_args(self) -> dict[str, str]:
         decision = self.context.decision
         if self.is_urgent_record:
-            return {"template": "urgent_reply", "text": visible(decision.urgent_draft or "")}
+            return {
+                "template": "urgent_reply",
+                "text": visible(decision.urgent_draft or ""),
+                # Why it is urgent, for the approval request (spec §4.5).
+                "quote": decision.urgent_quote or "",
+            }
         outcome = self.context.meeting
         if isinstance(outcome, SlotFree):
             return {"template": "confirmation", **_slot_args(outcome.slot)}
@@ -266,7 +271,10 @@ class _Planner:
         if not isinstance(outcome, SlotFree):
             raise ValueError("create_event needs a free slot")
         title = meeting.title if meeting is not None else self.context.facts.subject
-        return {**_slot_args(outcome.slot), "title": title}
+        windows = meeting.windows if meeting is not None else ()
+        # The times as the requester wrote them, for the event's description (spec §4.4).
+        quoted = "; ".join(f'"{window.quote}"' for window in windows)
+        return {**_slot_args(outcome.slot), "title": title, "quoted": quoted}
 
 
 def alternatives_reply(

@@ -6,7 +6,7 @@ the process dies.
 """
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -25,14 +25,17 @@ from support.decisions import decision_of
 from support.emails import make_raw
 from support.inbox_rig import ACCOUNT, BUCHAREST
 
+from aeca.application.ports import OpenApproval
 from aeca.domain.actions import ActionStatus, Verb
 from aeca.domain.approval import ApprovalState
 from aeca.domain.audit import AuditLine
 from aeca.domain.calendar_event import CalendarEvent
 from aeca.domain.email import RawEmail
 from aeca.domain.errors import EmailError, SystemWideError
+from aeca.domain.facts import extract_facts
 from aeca.domain.ids import approval_id, event_id
 from aeca.domain.labels import AWAITING, PROCESSED, Label
+from aeca.domain.policy import alternatives_reply
 from aeca.domain.time_range import Interval
 
 FIRST_EVENT_ID = event_id(SOURCE_ID, 0)
@@ -809,8 +812,12 @@ def test_an_answer_that_arrives_after_the_approval_closed_is_labelled_and_never_
     assert PROCESSED in rig.mailbox.labels_of(late)
     assert rig.inbox.decided == decided_before
     assert rig.calendar.inserted == []
-    [traced] = rig.inbox.tracer.of_kind("answer_after_close")
-    assert traced.fields["message_id"] == late
+    line = only_line_about(rig, late)
+    assert (line.outcome, line.rules, line.approval_state) == (
+        "ignored",
+        ("late_answer",),
+        "rejected",
+    )
 
 
 def test_an_answer_waiting_for_an_open_approval_is_left_for_the_approval_loop(
@@ -856,23 +863,33 @@ def test_a_reject_whose_answer_cannot_be_labelled_is_still_audited_and_labelled_
 # --- a DMARC pass judged for another From than the one AECA reads (blocking case 5) ---
 
 
-def forged_by_header_differential(rig: ApprovalRig, from_lines: str) -> str:
-    """Gmail judged DMARC for the attacker's own domain, and passed it."""
+def reply_with_headers(rig: ApprovalRig, header_lines: str, *, body: str = "APPROVE") -> str:
+    """A reply in the request thread, its headers written by hand as a forger would."""
     rfc822 = (
-        "Authentication-Results: mx.google.com; spf=pass; dkim=pass;"
-        " dmarc=pass header.from=evil.example\r\n"
-        f"{from_lines}To: {ACCOUNT}\r\nSubject: Re: [AECA] Approve: meeting\r\n\r\nAPPROVE\r\n"
+        f"{header_lines}To: {ACCOUNT}\r\nSubject: Re: [AECA] Approve: meeting\r\n\r\n{body}\r\n"
     ).encode()
     rig.mailbox.add(
         RawEmail(
-            message_id="forged",
+            message_id="hand-written",
             thread_id=rig.request_thread(),
             label_ids=frozenset({"INBOX"}),
             rfc822=rfc822,
             internal_date=datetime(2026, 11, 7, 11, 0, tzinfo=BUCHAREST),
         )
     )
-    return "forged"
+    return "hand-written"
+
+
+def dmarc_pass_for(domain: str) -> str:
+    return (
+        "Authentication-Results: mx.google.com; spf=pass; dkim=pass;"
+        f" dmarc=pass header.from={domain}\r\n"
+    )
+
+
+def forged_by_header_differential(rig: ApprovalRig, from_lines: str) -> str:
+    """Gmail judged DMARC for the attacker's own domain, and passed it."""
+    return reply_with_headers(rig, dmarc_pass_for("evil.example") + from_lines)
 
 
 @pytest.mark.parametrize(
@@ -897,3 +914,218 @@ def test_a_dmarc_pass_for_another_from_than_the_managers_is_ignored(
 
     assert_nothing_executed(rig)
     assert only_line_about(rig, forged).rules == (rule,)
+
+
+# --- fix round 1 ---
+
+# C1: a From that Python reduces to the manager's address, sent from the manager's own domain.
+
+DEFECTIVE_MANAGER_FROM_LINES = [
+    f"From: {MANAGER} <attacker@example.com>\r\n",
+    f"From: <{MANAGER}> attacker@example.com\r\n",
+    f"From: {MANAGER} (Boss) <attacker@example.com>\r\n",
+    f"From: Boss <{MANAGER}>attacker@example.com\r\n",
+    f"From: {MANAGER};attacker@example.com\r\n",
+    f"From: {MANAGER}\r\n\t<attacker@example.com>\r\n",
+]
+
+
+@pytest.mark.parametrize("from_lines", DEFECTIVE_MANAGER_FROM_LINES)
+def test_a_from_that_parses_with_defects_is_ignored_even_from_the_managers_domain(
+    rig: ApprovalRig, from_lines: str
+) -> None:
+    opened(rig)
+    forged = reply_with_headers(rig, dmarc_pass_for("example.com") + from_lines)
+
+    rig.tick()
+
+    assert_nothing_executed(rig)
+    line = only_line_about(rig, forged)
+    assert (line.outcome, line.rules) == ("ignored", ("answer_ignored:sender_ambiguous",))
+
+
+PROTON = "ionel.cimpan@protonmail.com"
+DAY1_PROTON_RESULT = (
+    "Authentication-Results: mx.google.com;\r\n"
+    "       dkim=pass header.i=@protonmail.com header.s=protonmail3 header.b=AbCdEf12;\r\n"
+    "       spf=pass (google.com: domain of ionel.cimpan@protonmail.com designates"
+    " 185.70.43.17 as permitted sender) smtp.mailfrom=ionel.cimpan@protonmail.com;\r\n"
+    "       dmarc=pass (p=QUARANTINE sp=QUARANTINE dis=NONE) header.from=protonmail.com\r\n"
+)
+
+
+def test_the_day1_proton_reply_still_counts(tmp_path: Path) -> None:
+    rig = opened(rig_with(tmp_path, manager_address=PROTON))
+    from_line = f"From: =?utf-8?Q?Ionel_C=C3=AEmpan?= <{PROTON}>\r\n"
+    reply_with_headers(rig, DAY1_PROTON_RESULT + from_line)
+
+    rig.tick()
+
+    assert_executed_once(rig)
+
+
+# I1: once a successor exists, the supersede sticks.
+
+
+def free_the_slot(rig: ApprovalRig) -> None:
+    rig.calendar.add(event_at("someone-elses-meeting", cancelled=True))
+
+
+def test_an_interrupted_supersede_never_lets_the_original_execute(rig: ApprovalRig) -> None:
+    rig.receive_meeting_request(
+        decision_of(
+            Label.MEETING_REQUEST,
+            meeting=MEETING,
+            urgent=True,
+            urgent_quote="today",
+            urgent_draft=URGENT_DRAFT,
+        )
+    )
+    rig.calendar.add(event_at("someone-elses-meeting"))
+    rig.answer("APPROVE")
+    rig.mailbox.send_failures = [SystemWideError("Gmail is down", next_action="wait")]
+    with pytest.raises(SystemWideError):
+        rig.service.process_all()
+    free_the_slot(rig)
+
+    rig.tick()
+    rig.tick()
+    rig.answer("APPROVE", thread_id=rig.request_thread(1))
+    rig.tick()
+
+    assert rig.approval(0).state is ApprovalState.SUPERSEDED
+    assert rig.approval(1).state is ApprovalState.EXECUTED
+    assert rig.calendar.inserted == []
+    assert "confirmation" not in rig.kinds_sent()
+    assert rig.kinds_sent().count("urgent_reply") == 1
+    assert rig.kinds_sent().count("alternatives") == 1
+    assert len(rig.requests_sent()) == 2
+
+
+def test_a_successor_already_open_makes_the_supersede_stick(rig: ApprovalRig) -> None:
+    opened(rig)
+    source = extract_facts(rig.mailbox.get(SOURCE_ID), rig.service_fact_settings())
+    later = Interval(TUESDAY_SLOT.start + timedelta(days=1), TUESDAY_SLOT.end + timedelta(days=1))
+    rig.service.open(
+        OpenApproval(
+            source=source,
+            actions=(alternatives_reply(SOURCE_ID, (later,), attempt=1),),
+            holds=(later,),
+            summary="Wants a sync.",
+            attempt=1,
+        )
+    )
+    answer = rig.answer("APPROVE")
+
+    rig.service.process_all()
+
+    assert rig.approval(0).state is ApprovalState.SUPERSEDED
+    assert rig.approval(1).state is ApprovalState.AWAITING
+    assert rig.calendar.inserted == []
+    assert "confirmation" not in rig.kinds_sent()
+    assert only_line_about(rig, answer).rules == ("slot_taken",)
+    assert {hold.approval_id for hold in rig.store.holds_active(rig.inbox.clock.now())} == {
+        rig.approval(1).id
+    }
+
+
+# X2: an answer whose source email can't be read ends, after two retries, as failed.
+
+
+def test_an_approve_whose_source_email_cannot_be_read_fails_after_two_retries(
+    rig: ApprovalRig,
+) -> None:
+    opened(rig)
+    rig.calendar.add(event_at("someone-elses-meeting"))
+    rig.mailbox.get_failures[SOURCE_ID] = EmailError("no such message", next_action="none")
+    approve = rig.answer("APPROVE")
+    reject = rig.answer("REJECT")
+
+    rig.service.process_all()
+    rig.service.process_all()
+    after_two = (rig.approval().state, lines_about(rig, reject))
+    rig.service.process_all()
+
+    assert after_two == (ApprovalState.AWAITING, [])
+    assert rig.approval().state is ApprovalState.FAILED
+    assert [line.outcome for line in lines_about(rig, approve)] == ["failed"] * 3
+    assert rig.store.holds_active(rig.inbox.clock.now()) == []
+    assert only_line_about(rig, reject).rules == ("answer_after_the_decision",)
+    assert rig.store.approval_get(approval_id(SOURCE_ID, 1)) is None
+
+
+# Late answers: a request thread the store has no awaiting approval for.
+
+
+def test_an_answer_in_a_request_thread_with_no_approval_left_is_labelled_and_audited_once(
+    rig: ApprovalRig,
+) -> None:
+    opened(rig)
+    thread = rig.request_thread()
+    decided_before = list(rig.inbox.decided)
+    rig.restart_with_the_volume_wiped()
+    answer = rig.answer("APPROVE", thread_id=thread)
+
+    for _ in range(3):
+        rig.tick()
+
+    assert PROCESSED in rig.mailbox.labels_of(answer)
+    assert rig.mailbox.get_log.count(answer) == 1
+    line = only_line_about(rig, answer)
+    assert (line.outcome, line.rules, line.approval_id) == ("ignored", ("late_answer",), None)
+    assert rig.inbox.decided == decided_before
+    assert rig.calendar.inserted == []
+
+
+# Bottom-posted answers, under an attribution line.
+
+
+@pytest.mark.parametrize(
+    ("text", "state"),
+    [
+        (
+            "On Sat, 7 Nov 2026 at 10:00, AECA <aeca@gmail.com> wrote:\n"
+            "> Hello,\n> To answer, reply with APPROVE or REJECT\n\nAPPROVE",
+            ApprovalState.EXECUTED,
+        ),
+        (
+            "On Sat, Nov 7, 2026 at 10:00 AM AECA <aeca@gmail.com>\nwrote:\n\n> Hello,\n\nReject.",
+            ApprovalState.REJECTED,
+        ),
+    ],
+    ids=["approve", "reject-gmail-wrapped"],
+)
+def test_a_bottom_posted_answer_under_an_attribution_line_is_read(
+    rig: ApprovalRig, text: str, state: ApprovalState
+) -> None:
+    opened(rig)
+    rig.answer(text)
+
+    rig.service.process_all()
+
+    assert rig.approval().state is state
+
+
+# What the spec says the texts hold.
+
+
+def test_the_request_for_an_urgent_internal_email_says_why_it_is_urgent(rig: ApprovalRig) -> None:
+    rig.receive_meeting_request(
+        decision_of(
+            Label.TASK, urgent=True, urgent_quote="the server is down", urgent_draft=URGENT_DRAFT
+        )
+    )
+
+    [request] = rig.requests_sent()
+    assert 'Why it is urgent: "the server is down"' in request.body
+
+
+def test_the_event_description_holds_the_quoted_times(rig: ApprovalRig) -> None:
+    opened(rig)
+    rig.answer("APPROVE")
+
+    rig.service.process_all()
+
+    [event] = rig.calendar.inserted
+    for text in ("Tuesday at 3pm", COLLEAGUE, "Sync?", rig.approval().id):
+        assert text in event.description

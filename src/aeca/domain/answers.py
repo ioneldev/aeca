@@ -1,7 +1,9 @@
 """The manager's answer to an approval request: which reply counts, and what it says.
 
 Code reads it, never the model (spec §4.5). A reply counts only when it provably comes from the
-manager; its answer is the first word of its first line not quoted with `>`.
+manager; its answer is the first word of its first line not quoted with `>`, skipping an
+attribution line ("On …, X wrote:") that sits directly above a quote, so an answer typed below
+the quote is read too.
 """
 
 import unicodedata
@@ -43,6 +45,10 @@ ANSWER_WORDS = {
 # Invisible characters a mail client may put before the first word; str.isspace() misses them.
 ZERO_WIDTH = frozenset("​‌‍⁠﻿")
 QUOTE_MARK = ">"
+ATTRIBUTION_START = "on "
+ATTRIBUTION_END = "wrote:"
+# Gmail wraps a long "On <date> <name> <address> wrote:" before "wrote:"; three lines cover it.
+MAX_ATTRIBUTION_LINES = 3
 
 
 def parse_answer(text: str) -> Answer:
@@ -99,11 +105,38 @@ def _domain_of(address: str) -> str:
 
 
 def _first_unquoted_line(text: str) -> str | None:
-    for line in text.splitlines():
-        content = _without_leading_blanks(line)
-        if content and not content.startswith(QUOTE_MARK):
+    lines = [_without_leading_blanks(line) for line in text.splitlines()]
+    index = 0
+    while index < len(lines):
+        content = lines[index]
+        attribution_end = _attribution_ending(lines, index) if content else None
+        if attribution_end is not None:
+            index = attribution_end + 1
+        elif content and not content.startswith(QUOTE_MARK):
             return content
+        else:
+            index += 1
     return None
+
+
+# Only a line that ends in "wrote:", or one that starts with "On " and wraps onto the line that
+# does, is ever skipped, and only when a quote follows. An answer written that way ("Approve, as
+# you wrote:") then reads as unclear, which is the safe side: it gets the help reply.
+def _attribution_ending(lines: list[str], start: int) -> int | None:
+    """The index of the attribution's last line, when one starts at `start`."""
+    for end in range(start, min(start + MAX_ATTRIBUTION_LINES, len(lines))):
+        line = lines[end]
+        if not line or line.startswith(QUOTE_MARK):
+            return None
+        if line.rstrip().lower().endswith(ATTRIBUTION_END):
+            starts_like_one = end == start or lines[start].lower().startswith(ATTRIBUTION_START)
+            return end if starts_like_one and _a_quote_follows(lines, end) else None
+    return None
+
+
+def _a_quote_follows(lines: list[str], end: int) -> bool:
+    following = next((line for line in lines[end + 1 :] if line), "")
+    return following.startswith(QUOTE_MARK)
 
 
 def _without_leading_blanks(line: str) -> str:

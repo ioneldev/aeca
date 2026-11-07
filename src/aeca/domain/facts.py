@@ -32,6 +32,7 @@ HIGH_X_PRIORITIES = frozenset({"1", "2"})
 AUTOMATED_LOCAL_PARTS = frozenset({"noreply", "no-reply", "mailer-daemon", "postmaster"})
 GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
 CANONICAL_GMAIL_DOMAIN = "gmail.com"
+MISSING_DEFECTS = "the header records no defects attribute"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +87,7 @@ def extract_facts(raw: RawEmail, settings: FactSettings) -> EmailFacts:
     _, reply_to_address = _first_address(message, "Reply-To")
     reply_to = reply_to_address or None
     auth = parse_authentication_results(_all_headers(message, "Authentication-Results"))
+    single_sender = _has_a_single_sender(message)
     bulk = _is_bulk(message, sender, settings)
     plain, html = body_text(message)
     return EmailFacts(
@@ -97,12 +99,13 @@ def extract_facts(raw: RawEmail, settings: FactSettings) -> EmailFacts:
         references=_bounded_optional(_header(message, "References"), REFERENCES_LIMIT),
         sender=sender,
         sender_name=bounded(visible(sender_name), SENDER_NAME_LIMIT),
-        single_sender=_has_a_single_sender(message),
+        single_sender=single_sender,
         reply_to=_bounded_optional(reply_to, REPLY_TO_LIMIT),
         reply_to_differs=reply_to is not None and reply_to != sender,
         subject=bounded(visible(_header(message, "Subject") or ""), SUBJECT_LIMIT),
         auth=auth,
-        internal=_counts_as_internal(sender, auth, settings),
+        # An ambiguous From never counts as internal, as it never counts as the manager (R40).
+        internal=single_sender and _counts_as_internal(sender, auth, settings),
         automated=bulk or _is_automated(message, sender),
         bulk=bulk,
         priority_high=_is_priority_high(message),
@@ -177,12 +180,18 @@ def _first_address(message: EmailMessage, header_name: str) -> tuple[str, str]:
         return "", ""
 
 
+# A defect means the parser dropped part of the header to find an address (for example
+# `boss@x <attacker@x>`), so the address read may not be the one Gmail judged DMARC for.
 def _has_a_single_sender(message: EmailMessage) -> bool:
     try:
         headers = list(message.get_all("From", []))
         if len(headers) != 1 or not isinstance(headers[0], AddressHeader):
             return False
-        return len(headers[0].addresses) == 1 and bool(headers[0].addresses[0].addr_spec)
+        header = headers[0]
+        # The header registry mixes BaseHeader, which owns `defects`, into every header class; the
+        # stubs don't say so. A header without it counts as defective.
+        defects: tuple[object, ...] = getattr(header, "defects", (MISSING_DEFECTS,))
+        return not defects and len(header.addresses) == 1 and bool(header.addresses[0].addr_spec)
     except Exception:
         return False
 

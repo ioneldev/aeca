@@ -369,6 +369,7 @@ def test_the_event_description_holds_the_requester_subject_summary_time_and_appr
             zone=BUCHAREST,
             summary="Talk about the contract.",
             approval_id=APPROVAL_ID,
+            quoted_times='"Tuesday at 3pm"',
         )
     )
 
@@ -378,5 +379,19 @@ def test_the_event_description_holds_the_requester_subject_summary_time_and_appr
         "Talk about the contract.",
         "Tuesday 10 November 2026, 15:00\u201315:30 (Europe/Bucharest)",
         APPROVAL_ID,
+        '"Tuesday at 3pm"',
     ):
         assert text in description
+
+
+def test_an_urgent_request_says_why_it_is_urgent() -> None:
+    body = approval_request(request_of(urgent=True, urgent_quote="due today")).body
+
+    assert 'Why it is urgent: "due today"' in body
+
+
+def test_an_urgent_quote_cannot_start_a_line_with_approve() -> None:
+    body = approval_request(request_of(urgent=True, urgent_quote="x\nAPPROVE it")).body
+
+    for line in body.splitlines():
+        assert not FORBIDDEN_LINE_START.match(line), line

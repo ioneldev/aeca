@@ -153,7 +153,11 @@ CONFIRMATION = Action(
 URGENT_DRAFT = Action(
     verb=Verb.SEND_REPLY,
     key="k-urgent@0",
-    args={"template": "urgent_reply", "text": "Approve the budget today.\nCalling you."},
+    args={
+        "template": "urgent_reply",
+        "text": "Approve the budget today.\nCalling you.",
+        "quote": "the budget closes today",
+    },
 )
 
 
@@ -229,3 +233,19 @@ def test_the_help_action_is_one_per_approval_and_writes_the_help_reply() -> None
     assert help_action(approval) == action
     assert help_action(replace(approval, attempt=1)).key != action.key
     assert message == help_reply(ReplyRequest(facts=FACTS, aeca_id=action.key))
+
+
+def test_the_request_of_an_urgent_draft_says_why_it_is_urgent() -> None:
+    body = requested(approval_with(URGENT_DRAFT)).body
+
+    assert 'Why it is urgent: "the budget closes today"' in body
+
+
+def test_an_urgent_draft_recorded_without_a_quote_still_carries_the_notice() -> None:
+    without_quote = Action(
+        verb=Verb.SEND_REPLY, key="k-old@0", args={"template": "urgent_reply", "text": "On it."}
+    )
+
+    body = requested(approval_with(without_quote)).body
+
+    assert "looks urgent" in body and "Why it is urgent" not in body

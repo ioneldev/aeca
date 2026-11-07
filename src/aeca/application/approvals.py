@@ -10,6 +10,7 @@ Each answer is marked read only once what it decided is saved, so a crash before
 again, and a crash after it does not.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -100,8 +101,7 @@ class ApprovalService:
         state, and only finishes sending its request if a crash stopped it."""
         opened_id = approval_id(request.source.message_id, request.attempt)
         approval = self._deps.store.approval_get(opened_id) or self._saved(request, opened_id)
-        if approval.state is ApprovalState.AWAITING and approval.request_thread_id is None:
-            self._send_request(approval, request.source)
+        self._request_unless_sent(approval, request.source)
         return opened_id
 
     def _saved(self, request: OpenApproval, opened_id: str) -> Approval:
@@ -120,6 +120,10 @@ class ApprovalService:
         )
         self._deps.store.approval_save(approval)
         return approval
+
+    def _request_unless_sent(self, approval: Approval, source: EmailFacts) -> None:
+        if approval.state is ApprovalState.AWAITING and approval.request_thread_id is None:
+            self._send_request(approval, source)
 
     # Built from the saved approval, never from the caller's request, so a resume registers the
     # very action the first run did.
@@ -161,16 +165,16 @@ class ApprovalService:
         and that approval is tried again on the next tick."""
         lines: list[AuditLine] = []
         for approval in self._deps.store.approvals_approved():
-            lines.extend(self._guarded(approval, resume=True))
+            lines.extend(self._guarded(approval, self._resume))
         for approval in self._deps.store.approvals_awaiting():
-            lines.extend(self._guarded(approval, resume=False))
+            lines.extend(self._guarded(approval, self._read_answers))
         return lines
 
-    def _guarded(self, approval: Approval, *, resume: bool) -> list[AuditLine]:
+    def _guarded(
+        self, approval: Approval, work: Callable[[Approval], list[AuditLine]]
+    ) -> list[AuditLine]:
         try:
-            if resume:
-                return [self._execute(approval, about=None)]
-            return self._read_answers(approval)
+            return work(approval)
         except Exception as error:
             if ends_the_tick(error):
                 raise
@@ -178,6 +182,9 @@ class ApprovalService:
                 "approval_not_processed", approval_id=approval.id, error=describe(error)
             )
             return []
+
+    def _resume(self, approval: Approval) -> list[AuditLine]:
+        return [self._execute(approval, about=None)]
 
     def _read_answers(self, approval: Approval) -> list[AuditLine]:
         if approval.request_thread_id is None:
@@ -190,6 +197,10 @@ class ApprovalService:
             line = self._take(current, self._read(summary))
             if line is not None:
                 lines.append(line)
+            # An answer left unread is read again next tick, and the ones after it wait behind
+            # it: the first decisive answer must stay the first.
+            if not self._deps.store.answer_seen(summary.message_id):
+                break
         return lines
 
     # A draft is not an answer yet, and Gmail may keep its message id when it is sent, so it is
@@ -263,8 +274,10 @@ class ApprovalService:
             ),
         )
 
+    # Review I1: once a successor exists, the supersede was decided. It is finished, never
+    # re-checked, or a slot that freed meanwhile would run this approval beside its successor.
     def _on_approve(self, approval: Approval, reply: _Reply) -> AuditLine:
-        if self._slot_taken(approval):
+        if self._saved_successor(approval) is not None or self._slot_taken(approval):
             return self._supersede(approval, reply)
         approved = approval.approve()
         self._deps.store.approval_save(approved)
@@ -319,12 +332,15 @@ class ApprovalService:
         ]
         return busy_intervals(events, holds, approval.source_thread_id)
 
-    # The successor is opened, and its request sent, before this approval is closed: a crash in
-    # between reads the APPROVE again, finds the successor already open, and opens no other.
+    # The decision is saved before any mail goes: the successor, then this approval superseded,
+    # then its audit line and the answer read, and only then the successor's request. Interrupted
+    # anywhere, the next tick finishes the same supersede.
     def _supersede(self, approval: Approval, reply: _Reply) -> AuditLine:
-        successor = self._successor(approval)
-        if successor is not None:
-            self.open(successor)
+        try:
+            source = self._source_facts(approval)
+        except EmailError as error:
+            return self._source_unreadable(approval, reply, error)
+        successor = self._saved_successor(approval) or self._new_successor(approval, source)
         superseded = approval.supersede()
         if successor is None:
             self._close(superseded)
@@ -332,11 +348,17 @@ class ApprovalService:
             # Its holds go; the email stays awaiting, now for the successor.
             self._deps.store.approval_save(superseded)
         outcome = Outcome.DONE if successor is None else Outcome.AWAITING_APPROVAL
-        return self._answered(
+        line = self._answered(
             reply, _Outcome(superseded, reply.facts, outcome, rules=(SLOT_TAKEN,))
         )
+        if successor is not None:
+            self._request_unless_sent(successor, source)
+        return line
 
-    def _successor(self, approval: Approval) -> OpenApproval | None:
+    def _saved_successor(self, approval: Approval) -> Approval | None:
+        return self._deps.store.approval_get(_successor_id(approval))
+
+    def _new_successor(self, approval: Approval, source: EmailFacts) -> Approval | None:
         attempt = approval.attempt + 1
         source_id = approval.source_message_id
         alternatives = self._alternatives(approval)
@@ -349,12 +371,28 @@ class ApprovalService:
         actions = (*(offered if alternatives else ()), *carried)
         if not actions:
             return None
-        return OpenApproval(
-            source=self._source_facts(approval),
+        request = OpenApproval(
+            source=source,
             actions=actions,
             holds=alternatives,
             summary=approval.summary,
             attempt=attempt,
+        )
+        return self._saved(request, _successor_id(approval))
+
+    # Review X2: an approval whose source email can no longer be read is never blocked forever.
+    # The answer stays unread for the next two ticks, then the approval fails and is closed.
+    def _source_unreadable(self, approval: Approval, reply: _Reply, error: EmailError) -> AuditLine:
+        tries = self._deps.store.attempts_increment(approval.id)
+        if tries < MAX_EXECUTION_TRIES:
+            return self._audited(
+                _Outcome(approval, reply.facts, Outcome.FAILED, error=describe(error))
+            )
+        # The manager approved; it is carrying out that answer which failed.
+        failed = approval.approve().failed()
+        self._close(failed)
+        return self._answered(
+            reply, _Outcome(failed, reply.facts, Outcome.FAILED, error=describe(error))
         )
 
     def _alternatives(self, approval: Approval) -> tuple[Interval, ...]:
@@ -380,9 +418,11 @@ class ApprovalService:
             )
         self._deps.store.approval_save(closed)
 
+    # Seen first: if the label then fails, the inbox loop labels it later without auditing it a
+    # second time, since it knows the approval loop already read it.
     def _mark_read(self, reply: _Reply) -> None:
-        self._deps.mailbox.modify(reply.facts.message_id, add=[PROCESSED], remove=[])
         self._deps.store.answer_mark_seen(reply.facts.message_id)
+        self._deps.mailbox.modify(reply.facts.message_id, add=[PROCESSED], remove=[])
 
     def _source_facts(self, approval: Approval) -> EmailFacts:
         raw = self._deps.mailbox.get(approval.source_message_id)
@@ -428,6 +468,10 @@ class ApprovalService:
     def _summary_of(self, action: Action) -> ActionSummary:
         record = self._deps.store.action_get(action.key)
         return action_summary(action, ActionStatus.PENDING if record is None else record.status)
+
+
+def _successor_id(approval: Approval) -> str:
+    return approval_id(approval.source_message_id, approval.attempt + 1)
 
 
 def _is_aecas_own(facts: EmailFacts) -> bool:
