@@ -1,5 +1,7 @@
 # 0003: The first `send` rehearsal
 
+**Changed in part by [0061](0061-what-reset-test-treats-as-the-rehearsals.md)** (2026-11-07): reset-test finds rehearsal mail by more than its two sender addresses. What follows is kept as it was written.
+
 - **Run on:** 2026-11-07, 16:04–16:11 UTC, against `aecatest74@gmail.com`, by Claude, with Ionel's go.
 - **Build:** `build` at `bbd97ba`. That covers Task 11's full inbox loop, with the image built at `019e6e7`, and the Mail.app rehearsal sender. Approval requests aren't sent yet. Until Task 13, an approval is saved as `awaiting` and the email gets `AECA/awaiting`.
 - **Model:** `claude-opus-5-5` at effort `low`.

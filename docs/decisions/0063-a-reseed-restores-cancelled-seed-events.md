@@ -11,6 +11,6 @@
 **Rejected.**
 - Always restoring with `confirmed` (Claude): it would change the seeded data, such as the tentative vendor call.
 
-**Cost.** None found beyond one extra read per cancelled seed event.
+**Cost.** None found beyond one extra read per already-existing seed event, live or cancelled.
 
 **Source:** `src/aeca/adapters/google_seed_calendar.py`, `src/aeca/tools/seed_calendar.py`.

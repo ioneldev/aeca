@@ -55,7 +55,7 @@ What AECA doesn't do, and what each costs. The first four are named in the spec 
 - **The rehearsal sends 27 of the 32 deliverable corpus emails.** Mail.app can set neither custom headers nor HTML. The other 5, and the 3 a real account can't send, run only in `make eval` ([0057](decisions/0057-rehearsal-through-mail-app.md)).
 - **Spikes 12, 13, 15 and 17 of [spec §11](superpowers/specs/2026-11-05-aeca-design.md#11-to-verify-on-day-1) weren't settled** by the runs so far ([0001](decisions/0001-day1-spikes.md), [0003](decisions/0003-first-send-rehearsal.md)).
 - **`make reset-test` is Ionel's tool, with these limits** ([0061](decisions/0061-what-reset-test-treats-as-the-rehearsals.md), [0062](decisions/0062-reset-tests-own-lock-check.md)):
-  - A hand reply with no `In-Reply-To` or `References` naming the request is left alone, and listed.
+  - A hand reply with no `In-Reply-To` or `References` naming the request is left alone. It shows only in the count of its sender's "left alone" messages, not as an item.
   - A run after the handover would also trash later mail from the two rehearsal addresses. It stays in Trash for 30 days.
   - When `MANAGER_ADDRESS` is empty, AECA's replies and alerts to the account itself can't be found by reset-test. Only approval requests can (R3).
-  - It refuses for 10 minutes after the last copy stops, because the lock doesn't record the holder's `POLL_SECONDS`.
+  - It refuses for at least 10 minutes after the last copy stops (longer when 3 × `POLL_SECONDS` is more), because the lock doesn't record the holder's `POLL_SECONDS`.

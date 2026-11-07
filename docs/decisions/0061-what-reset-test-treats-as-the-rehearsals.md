@@ -1,5 +1,7 @@
 # 0061: What reset-test treats as the rehearsal's
 
+**Refines [0057](0057-rehearsal-through-mail-app.md)'s "identified by its two sender addresses".**
+
 **Who decided:** Claude, 2026-11-07. The test cases come from the `tech-lead` agent.
 
 **Decision.**
@@ -20,6 +22,6 @@
 - A `REHEARSAL_UNTIL` cutoff date (Claude).
 - Gmail search (Claude).
 
-**Cost.** A hand reply without `In-Reply-To` or `References` naming the request is left over, and listed.
+**Cost.** A hand reply without `In-Reply-To` or `References` naming the request is left over. It shows only in the count of its sender's "left alone" messages, not as an item.
 
 **Source:** `src/aeca/domain/rehearsal_mail.py`, `src/aeca/tools/reset_test.py`, `src/aeca/tools/reset_plan.py`; [0046](0046-rehearse-with-real-mail-on-the-handover-account.md).

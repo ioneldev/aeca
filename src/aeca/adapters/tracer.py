@@ -1,4 +1,5 @@
-"""Writes trace.jsonl, and debug.log when enabled, with every secret replaced by a marker."""
+"""Writes trace.jsonl, and debug-YYYY-MM-DD.log when enabled, with every secret replaced by a
+marker."""
 
 import json
 import re
@@ -29,7 +30,7 @@ class JsonlTracer:
     ) -> None:
         self._redactor = Redactor(secrets)
         self._clock = clock
-        # 0700, because debug.log holds email text.
+        # 0700, because the debug log holds email text.
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._trace = RotatingLogFile(directory / "trace.jsonl", rotation)
         self._directory = directory

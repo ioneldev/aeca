@@ -59,7 +59,7 @@ If your own consent screen is in Testing mode, tokens last 7 days. Run `make aut
 - A heartbeat is stale after 3 × `POLL_SECONDS`. A copy that starts while another copy's heartbeat is fresh exits with a configuration error and sends nothing. Wait out the stale time, stop the other copy, or set `FORCE_LOCK=true`.
 - The copy's id is kept in the data volume (`copy-id`), so a restart of the same installation takes its own lock back at once. Another machine has another volume, so another id. A wiped volume is a new copy, which waits out the stale time.
 - If several lock drafts exist, the one with the lowest draft id is the lock.
-- A copy that finds it no longer holds the lock stops with exit 1. Docker restarts it, and it exits again with the same message for as long as the other copy holds the lock.
+- A copy that finds it no longer holds the lock stops with exit 1. Docker restarts it, and it exits with a configuration error for as long as the other copy holds the lock.
 - The lock is a courtesy. The ids AECA derives from Gmail message ids are what stop duplicate work ([0039](docs/decisions/0039-the-lock-is-a-courtesy.md)).
 
 Limits of the lock are in [docs/limitations.md](docs/limitations.md).
@@ -194,7 +194,7 @@ These are for Ionel's own checkout, not for you. `make rehearse` sends the corpu
   - E2: events under ids AECA derived from a rehearsal email.
 - **What it writes:** `messages.trash` and `events.delete`, which cancels an event. Never threads, drafts, labels or the lock.
 - **When it refuses:** while any `AECA lock` draft has a heartbeat younger than the larger of 3 × `POLL_SECONDS` and 10 minutes, dated in the future, or unreadable, and when the drafts can't be listed. It ignores `FORCE_LOCK`. Run `make stop`, wait 10 minutes, and run it again.
-- **Its output** lists each item with its rule, the totals per rule, and a "left alone" summary by sender: what the rules didn't match, and how much of it sits in the Inbox unprocessed. Check that summary before `--yes`.
+- **Its output** lists each item with its rule, the totals per rule, and a "left alone" summary by sender: what the rules didn't match, and how much of it sits in the Inbox unprocessed. A draft that a rule matches is listed and never trashed. Check that summary before `--yes`.
 - **Re-seeding:** `make seed-calendar` after a reset brings the cancelled seed events back, each with its own status.
 
 Why these rules: [0061](docs/decisions/0061-what-reset-test-treats-as-the-rehearsals.md), [0062](docs/decisions/0062-reset-tests-own-lock-check.md), [0063](docs/decisions/0063-a-reseed-restores-cancelled-seed-events.md). The limits are in [docs/limitations.md](docs/limitations.md).

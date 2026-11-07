@@ -21,7 +21,7 @@ from aeca.domain.lease import (
 class CopyLockDeps:
     lease: Lease
     clock: Clock
-    # Random per process start: it names a running process, not an email.
+    # Kept in the data volume, so it names one installation, not a process and not an email.
     copy_id: str
     poll_seconds: float
     force: bool

@@ -1,5 +1,7 @@
 # 0057: The rehearsal sends through Mail.app, from two addresses it already has
 
+**Changed in part by [0061](0061-what-reset-test-treats-as-the-rehearsals.md)** (2026-11-07): reset-test finds rehearsal mail by more than its two sender addresses. What follows is kept as it was written.
+
 **Who decided:** Ionel. 2026-11-07. This supersedes [0049](0049-the-rehearsal-sends-over-smtp.md).
 
 **Decision.**
