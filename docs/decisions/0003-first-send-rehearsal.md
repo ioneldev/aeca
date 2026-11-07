@@ -44,7 +44,7 @@
 - **`meeting-no-time-proposed` ("sometime next week") got an event at Monday 13:10, for approval, instead of alternatives.**
   - The model read "next week" as a window, and the spec's rule ("the earliest free slot in the first window that has one") booked the first free half hour after the other threads' holds.
   - This follows the spec. Whether a vague request should get three alternatives instead is a question for Ionel's corpus check.
-  - **[NEEDS CLARIFICATION: vague window → earliest slot, or alternatives?]**
+  - **[NEEDS CLARIFICATION: vague window → earliest slot, or alternatives?]** Resolved by [0058](0058-vague-requests-get-alternatives.md): alternatives.
 - **The acknowledgement and thank-you choices varied.** The model decides whether one is warranted (spec §4.3).
   - Promotion: no acknowledgement.
   - Task with a far deadline: acknowledgement.
@@ -58,9 +58,21 @@
 - **Spike 13 (whether Gmail files a sender's later mail in Spam after AECA moves one of its emails):** not settled. Mail.app sent every email within a minute, before AECA moved the spam.
 - **Spike 17 (the never-Spam filter):** not checked.
 - **Spike 12 (matching an invitation by its iCalUID):** no invitation was sent.
-- **Approval requests, approve and reject:** Task 13's live check.
+
+## Approvals answered live (2026-11-07)
+
+Task 13's live check, with the approval loop in place. Ionel answered from the manager's Proton address.
+
+- 11 approval requests went to the manager's Proton address, and 10 were answered:
+  - 4 approvals created the event and sent the confirmation.
+  - 4 approvals sent the alternatives.
+  - The urgent task's reply was sent. It still used the old wrapped template, because the running image predated [0060](0060-the-urgent-draft-goes-out-as-written.md).
+  - One unclear answer got a help reply, and the REJECT that followed was recorded and released its holds.
+- 5 more meeting requests sent later were approved and executed.
+- 8 live AECA events match the 8 executed `create_event` actions.
+- The one left awaiting is Dana's urgent meeting from before the change ([0059](0059-an-urgent-meeting-gets-one-reply.md)). The reset cleans it up.
 
 ## Follow-ups
 
 - **Ionel's corpus check (Task 12 Step 5):** the vague-window question above, and the order-dependent Monday 14:00 slot shared by two corpus emails.
-- **Cleanup:** `make reset-test` (Task 17) moves this run's mail to Trash and cancels the seeded events. Rehearsal mail is identified by its two sender addresses.
+- **Cleanup:** `make reset-test` ([0061](0061-what-reset-test-treats-as-the-rehearsals.md)) moves this run's mail to Trash and cancels the seeded events. Rehearsal mail is identified by its two sender addresses.

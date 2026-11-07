@@ -2,7 +2,7 @@
 
 The short map. The reasoning is in [DESIGN.md](../DESIGN.md) and the [decision records](decisions/README.md).
 
-**Status:** Built and run: the inbox loop, the decision, the policy and planner, the approval loop, the journal, startup checks, the cost cap, incident alerts, the corpus, `make eval`, `make seed-calendar` and `make rehearse`. <!-- Task 15 --> <!-- Task 17 --> The health check, the copy lock and the debug log (Task 15) and `make reset-test` (Task 17) are not described here yet.
+**Status:** Built and run: the inbox loop, the decision, the policy and planner, the approval loop, the journal, startup checks, the cost cap, incident alerts, the corpus, `make eval`, `make seed-calendar`, `make rehearse`, the health check, the copy lock, graceful stop and `make reset-test`. The debug log's file handling is built, but no step writes to it yet ([limitations](limitations.md)).
 
 ## Layers
 
@@ -13,14 +13,14 @@ Ports and adapters. Each layer is a folder under `src/aeca/`, and `tests/test_ar
 | `domain/` | Frozen models and pure rules, with no I/O | the domain, and pydantic |
 | `application/` | The flow, and the ports it needs | the domain and the application |
 | `adapters/` | Gmail, Calendar, Anthropic, SQLite, logs: one adapter per port | anything |
-| `tools/` | The test commands: corpus, eval, calendar seeding, rehearsal | anything |
+| `tools/` | The test commands: corpus, eval, calendar seeding, rehearsal, reset-test | anything |
 | `cli.py`, `wiring.py`, `settings.py` | The commands, the one place adapters meet ports, and the typed settings | anything |
 
-**Domain** (`src/aeca/domain/`): `email`, `facts`, `auth_results`, `links`, `text`, `rules`, `decision`, `validation`, `labels`, `policy`, `actions`, `planner`, `time_range`, `calendar_event`, `meeting_outcome`, `approval`, `answers`, `approval_messages`, `replies`, `compose`, `templates`, `outgoing`, `journal`, `ids`, `audit`, `errors`, `secret`.
+**Domain** (`src/aeca/domain/`): `email`, `facts`, `auth_results`, `links`, `text`, `rules`, `decision`, `validation`, `labels`, `policy`, `actions`, `planner`, `time_range`, `calendar_event` (the event as the planner and reset-test read it), `meeting_outcome`, `approval`, `answers`, `approval_messages`, `replies`, `compose`, `templates`, `outgoing`, `journal`, `ids`, `audit`, `errors`, `secret`, `lease` (who holds the inbox), `rehearsal_mail` and `reset_lock` (what reset-test may touch, and when it must refuse).
 
-**Application** (`src/aeca/application/`): `service` (the tick), `process_email` (one email), `decide`, `decision_prompt` and `prompts/`, `meetings`, `executor`, `approvals`, `deferred_approval`, `watch`, `startup`, `budget`, `incidents`, `failures`, `ports` and `state_ports`.
+**Application** (`src/aeca/application/`): `service` (the tick), `process_email` (one email), `decide`, `decision_prompt` and `prompts/`, `meetings`, `executor`, `approvals`, `deferred_approval`, `watch`, `startup`, `copy_lock`, `budget`, `incidents`, `failures`, `ports` and `state_ports`.
 
-**Ports:** `Clock`, `Tracer`, `LLMClient`, `Mailbox`, `Calendar`, `ApprovalOpener`, `StateStore`, `AuditLog`, `IncidentReporter`, `SpendLedger`.
+**Ports:** `Clock`, `Tracer`, `LLMClient`, `Mailbox`, `Calendar`, `ApprovalOpener`, `StateStore`, `AuditLog`, `IncidentReporter`, `SpendLedger`, `Lease`.
 
 **Adapters** (`src/aeca/adapters/`):
 
@@ -29,7 +29,9 @@ Ports and adapters. Each layer is a folder under `src/aeca/`, and `tests/test_ar
 | `LLMClient` | `anthropic_client` (retries 429s, 5xx and dropped connections itself, with `max_retries=0` on the SDK), `pricing`, `models_file` |
 | `Mailbox` | `gmail` |
 | `Calendar` | `google_calendar` |
-| Google plumbing | `google_auth`, `google_services`, `google_errors`, `google_seed_calendar` |
+| Google plumbing | `google_auth`, `google_services`, `google_errors`, `google_seed_calendar`, `google_reset` (reset-test's reads and its two writes) |
+| `Lease` | `gmail_lease` (the lock draft), `copy_id_file` |
+| Health | `heartbeat_file` |
 | `StateStore` | `sqlite_state` (schema version in `PRAGMA user_version`) |
 | `AuditLog`, `Tracer` | `audit_log`, `tracer`, `json_log`, `rotating_log`, `redactor` |
 | `Clock` | `clock` |
@@ -48,7 +50,7 @@ Ports and adapters. Each layer is a folder under `src/aeca/`, and `tests/test_ar
 7. **Journal.** The decision and the planned actions are stored, each with its key.
 8. **Execute.** `Executor.run` performs each action once.
 9. **Approve.** Actions that need approval become one approval, and `request_approval` sends the request.
-10. **Audit.** One `AuditLine`. `AECA/processed` is added last, and `AECA/awaiting` stays while an approval is open.
+10. **Audit.** One `AuditLine`. Its `rules` hold the rules that fired and the validator's drop notes, such as `urgent: its quote is not in the email`. `AECA/processed` is added last, and `AECA/awaiting` stays while an approval is open.
 
 A failure ends one of two ways ([0036](decisions/0036-two-kinds-of-error.md)). A system-wide one, such as a refused key, a 429, a 5xx or the cost cap, ends the tick, and AECA backs off as a whole. An error in one email is audited as `failed`, the email gets `AECA/error`, and the next polls retry it up to 3 times.
 
@@ -77,6 +79,16 @@ States: `awaiting → approved → executed | failed`; `awaiting → rejected`; 
 
 Why the order: [0031](decisions/0031-every-action-goes-through-one-journal.md), [0026](decisions/0026-event-is-created-once-from-a-derived-id.md), [0027](decisions/0027-approval-ids-and-headers-need-no-state-store.md). One limit remains: [limitations](limitations.md).
 
+## The service loop, the lock and health
+
+`aeca run` sets a stop event on SIGTERM and SIGINT. `Service.run` starts up (`startup`: the checks, then `CopyLock.acquire`, then the resume of unfinished actions), then ticks until the event is set. A tick first calls `ensure_held`, and again before each email and before it records the poll. A lost lock raises `LockLost`, which is not a system-wide error, so the run ends with exit 1.
+
+`domain/lease.py` holds the rule: a heartbeat is fresh for 3 × `POLL_SECONDS`, and one dated further ahead than that is not fresh either. `adapters/gmail_lease.py` stores the lock as the draft `AECA lock`, found with `drafts.list`, with the lowest draft id as the lock. `application/copy_lock.py` renews it on each poll, and between emails once a poll's time has passed. Each renewal also writes the heartbeat file that `aeca health` reads. The copy id comes from `copy-id` in the data directory ([0065](decisions/0065-the-copy-id-is-persisted-in-the-data-dir.md)).
+
+## reset-test
+
+`aeca reset-test` is Ionel's tool, in `tools/reset_test.py` and `tools/reset_plan.py`. It reads every message and the tagged events, applies the rules of `domain/rehearsal_mail.py` (R1 to R4, E1, E2) to one message at a time, and prints a plan. With `--yes` it moves the matched mail to Trash and cancels the matched events: `messages.trash` and `events.delete` are all it writes. `domain/reset_lock.py` makes it refuse while any lock draft may be live, and it checks again before the first write. Why: [0061](decisions/0061-what-reset-test-treats-as-the-rehearsals.md), [0062](decisions/0062-reset-tests-own-lock-check.md).
+
 ## The files
 
 | File | Where | What |
@@ -84,7 +96,10 @@ Why the order: [0031](decisions/0031-every-action-goes-through-one-journal.md), 
 | `state.db` | `/data` volume | Approvals, holds, the journal, spend, incidents |
 | `audit.jsonl` | `/data` volume | One line per email and per approval outcome |
 | `trace.jsonl` | `/data` volume | Every step, model call, Google call and retry |
+| `heartbeat` | `/data` volume | The time of the last successful poll, for `aeca health` |
+| `copy-id` | `/data` volume | This installation's id for the copy lock |
+| `debug-YYYY-MM-DD.log` | `/data` volume | With `DEBUG_LOG=true`; rotated, and kept `DEBUG_LOG_DAYS` days. Nothing writes to it yet |
 
 ## The commands
 
-`aeca auth`, `run`, `audit`, `approvals`, `eval`, `seed-calendar`, `rehearse` and `reset-test`, in `cli.py` and `tools/tool_commands.py`. The `make` targets call them; `make preflight` is `scripts/preflight.sh`.
+`aeca auth`, `run`, `health`, `audit`, `approvals`, `eval`, `seed-calendar`, `rehearse` and `reset-test`, in `cli.py` and `tools/tool_commands.py`. The `make` targets call them; `make preflight` is `scripts/preflight.sh`.

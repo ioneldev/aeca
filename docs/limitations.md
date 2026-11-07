@@ -21,7 +21,9 @@ What AECA doesn't do, and what each costs. The first four are named in the spec 
 
 - **A state volume wiped after an event is created and before its confirmation is sent leaves the confirmation unsent.** It is at most once there, not exactly once. The event exists; the requester never hears.
 - **After a wiped volume, a message in a thread of its own** (an approval request, an urgent notice, an alert) is found again only among the 25 most recent sent messages. An older one could be sent again.
-- **Two copies starting in the same moment can both take the lock** (Gmail drafts have no compare-and-swap), and then each may send an approval request. The manager would see two; the second APPROVE finds the event already created ([0039](decisions/0039-the-lock-is-a-courtesy.md)). <!-- Task 15 -->
+- **Two copies can both hold the lock, in a narrow race.** Gmail drafts have no compare-and-swap. When two copies create a lock draft in the same moment, the lowest draft id wins. A copy that has already accepted its draft keeps it when a later draft gets a lower id, and then both copies hold the lock. Each may then send an approval request, and the manager would see two. The harm is bounded: derived ids stop duplicate work, and the model spend doubles ([0039](decisions/0039-the-lock-is-a-courtesy.md)).
+- **The copy lock identifies a data volume, not a process.** Two containers on one volume, such as `docker compose run` beside `up`, share a copy id and both hold the lock. The ids derived from message ids still stop duplicate work.
+- **The heartbeat is renewed between emails.** One email that takes longer than 3 × `POLL_SECONDS` makes `aeca health` report unhealthy for that time.
 
 ## Approvals
 
@@ -44,7 +46,16 @@ What AECA doesn't do, and what each costs. The first four are named in the spec 
 - **The urgent window of two working days is a guess, tuned with `make eval`** (spec §4.2, [0019](decisions/0019-what-counts-as-urgent.md)).
 - **Cost.** About half a cent per call with a warm cache, about 2 cents after a quiet spell. The cap is `MAX_USD_PER_DAY` ([0002](decisions/0002-first-live-run.md)).
 
+## The debug log
+
+- **`DEBUG_LOG=true` writes nothing yet.** The file name, the rotation and the clean-up by `DEBUG_LOG_DAYS` are built and tested, but no step of AECA calls the debug logger. `trace.jsonl` and `audit.jsonl` are the records.
+
 ## Testing
 
 - **The rehearsal sends 27 of the 32 deliverable corpus emails.** Mail.app can set neither custom headers nor HTML. The other 5, and the 3 a real account can't send, run only in `make eval` ([0057](decisions/0057-rehearsal-through-mail-app.md)).
 - **Spikes 12, 13, 15 and 17 of [spec §11](superpowers/specs/2026-11-05-aeca-design.md#11-to-verify-on-day-1) weren't settled** by the runs so far ([0001](decisions/0001-day1-spikes.md), [0003](decisions/0003-first-send-rehearsal.md)).
+- **`make reset-test` is Ionel's tool, with these limits** ([0061](decisions/0061-what-reset-test-treats-as-the-rehearsals.md), [0062](decisions/0062-reset-tests-own-lock-check.md)):
+  - A hand reply with no `In-Reply-To` or `References` naming the request is left alone, and listed.
+  - A run after the handover would also trash later mail from the two rehearsal addresses. It stays in Trash for 30 days.
+  - When `MANAGER_ADDRESS` is empty, AECA's replies and alerts to the account itself can't be found by reset-test. Only approval requests can (R3).
+  - It refuses for 10 minutes after the last copy stops, because the lock doesn't record the holder's `POLL_SECONDS`.
