@@ -4,6 +4,7 @@ Docker restarts a failing container, and Google suspends a new account that send
 import ssl
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,7 @@ from aeca.application.startup import (
     startup_checks,
 )
 from aeca.domain.actions import Action, ActionStatus, Verb
+from aeca.domain.approval import Approval, ApprovalState
 from aeca.domain.errors import AecaError, ConfigError, SystemWideError
 from aeca.domain.facts import FactSettings
 from aeca.domain.journal import JournalEntry
@@ -149,14 +151,16 @@ def test_a_passing_start_checks_each_credential_and_sends_nothing(rig: Rig) -> N
 def test_the_address_check_ignores_case_and_gmail_dots(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
     rig.mailbox = FakeMailbox("A.Eca@GMail.com")
-    rig.checks = StartupDeps(**{**rig.checks.__dict__, "mailbox": rig.mailbox})
+    rig.checks = replace(rig.checks, mailbox=rig.mailbox)
 
     startup_checks(rig.checks)
+
+    assert rig.model.access_checks == [MODEL]
 
 
 def test_a_different_account_fails_with_its_next_action(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
-    rig.checks = StartupDeps(**{**rig.checks.__dict__, "gmail_address": "someone.else@gmail.com"})
+    rig.checks = replace(rig.checks, gmail_address="someone.else@gmail.com")
 
     with pytest.raises(ConfigError) as raised:
         startup_checks(rig.checks)
@@ -197,7 +201,7 @@ def test_a_refused_key_fails_the_start_with_the_models_next_action(rig: Rig) -> 
 
 def test_an_empty_internal_senders_list_warns_once_on_the_console(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
-    rig.checks = StartupDeps(**{**rig.checks.__dict__, "internal_senders": frozenset()})
+    rig.checks = replace(rig.checks, internal_senders=frozenset())
 
     startup_checks(rig.checks)
 
@@ -256,17 +260,13 @@ def test_executing_actions_are_resolved_before_the_first_poll(rig: Rig) -> None:
     rig.store.action_update(action.key, ActionStatus.EXECUTING)
     polled_after_resume: list[str] = []
 
-    class Poller(_NothingToProcess):
-        def unfinished(self) -> list[str]:
-            polled_after_resume.append(_status(rig, action))
-            return []
-
     stop = threading.Event()
 
-    class StopAfterTheFirstPoll(Poller):
+    class StopAfterTheFirstPoll(_NothingToProcess):
         def unfinished(self) -> list[str]:
+            polled_after_resume.append(_status(rig, action))
             stop.set()
-            return super().unfinished()
+            return []
 
     rig.service(start=rig.start_up, processor=StopAfterTheFirstPoll()).run(stop)
 
@@ -315,7 +315,7 @@ def _break(rig: Rig, failure: str) -> None:
     elif failure == "tls":
         rig.calendar.zone_failure = classify(ssl.SSLError("certificate verify failed"))
     elif failure == "other_account":
-        rig.checks = StartupDeps(**{**rig.checks.__dict__, "gmail_address": "other@gmail.com"})
+        rig.checks = replace(rig.checks, gmail_address="other@gmail.com")
     else:
         rig.model.access_failure = KEY_REFUSED
 
@@ -324,3 +324,25 @@ def _status(rig: Rig, action: Action) -> str:
     record = rig.store.action_get(action.key)
     assert record is not None
     return record.status.value
+
+
+def test_resume_unfinished_skips_the_actions_of_an_approval_that_is_not_approved(rig: Rig) -> None:
+    rig.mailbox.add(make_raw(message_id="m1", thread_id="t1", sender="client@example.com"))
+    gated = Action(Verb.STAR, key="k-gated", args={})
+    rig.store.approval_save(
+        Approval(
+            id="a-1",
+            source_message_id="m1",
+            source_thread_id="t1",
+            attempt=0,
+            actions=(gated,),
+            state=ApprovalState.AWAITING,
+            request_thread_id=None,
+            summary="s",
+            holds=(),
+        )
+    )
+
+    assert resume_unfinished(rig.resumer, rig.store) == 0
+    assert _status(rig, gated) == ActionStatus.PENDING.value
+    assert rig.mailbox.modify_log == []

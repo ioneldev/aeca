@@ -1,5 +1,7 @@
 """The parts of a Service a test about something else does not care about."""
 
+from decimal import Decimal
+
 from fakes.recording_incidents import RecordingIncidents
 from fakes.recording_tracer import RecordingTracer
 
@@ -9,6 +11,8 @@ ALERT_AFTER_FAILURES = 3
 
 
 class AlwaysAffordable:
+    spent_usd = Decimal(0)
+
     def exhausted(self) -> bool:
         return False
 

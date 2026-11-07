@@ -2,6 +2,7 @@
 in a row. The incident's open state is in the store; only the count of failures is in memory."""
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Protocol
 
 from aeca.application.decide import BudgetExhausted
@@ -16,6 +17,9 @@ LATEST_ERROR_LIMIT = 300
 
 
 class SpendGate(Protocol):
+    @property
+    def spent_usd(self) -> Decimal: ...
+
     def exhausted(self) -> bool: ...
 
 
@@ -32,13 +36,15 @@ class FailureWatch:
         self._deps = deps
         # Emails, not attempts: one email retried on every poll is one failure.
         self._failed_in_a_row: dict[str, str] = {}
+        self._model_answered = False
 
     def email_failed(self, message_id: str, error: str) -> None:
         self._failed_in_a_row[message_id] = error
         if len(self._failed_in_a_row) >= self._deps.alert_after_failures:
             self._report(IncidentKind.FAILURES_IN_A_ROW, self._failures_detail(error))
 
-    def email_processed(self) -> None:
+    def email_processed(self, *, used_model: bool) -> None:
+        self._model_answered = self._model_answered or used_model
         self._failed_in_a_row.clear()
         self._deps.incidents.clear(IncidentKind.FAILURES_IN_A_ROW)
 
@@ -49,7 +55,19 @@ class FailureWatch:
             self._report(IncidentKind.KEY_REFUSED, describe(error))
 
     def tick_completed(self) -> None:
-        if not self._deps.budget.exhausted():
+        self._settle_the_cost_cap()
+        # Only a paid call proves the key: a rule-decided email never reaches the model.
+        if self._model_answered:
+            self._deps.incidents.clear(IncidentKind.KEY_REFUSED)
+        self._model_answered = False
+
+    # The last call can overshoot the cap without any call being refused, so the manager hears
+    # of it when the cap is hit, not when the next email arrives.
+    def _settle_the_cost_cap(self) -> None:
+        budget = self._deps.budget
+        if budget.exhausted():
+            self._report(IncidentKind.COST_CAP, f"Spent today: ${budget.spent_usd:.4f}")
+        else:
             self._deps.incidents.clear(IncidentKind.COST_CAP)
 
     def _failures_detail(self, latest_error: str) -> str:

@@ -1,6 +1,7 @@
 """The service says when it is broken: a refused key, the cost cap and emails failing in a row each
 send one alert per incident, and nothing it says depends on Gmail being up for the tick."""
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -298,3 +299,49 @@ def test_a_failing_alert_does_not_fail_the_tick_and_is_traced(tmp_path: Path) ->
 
 def _a_decision() -> ModelDecision:
     return ModelDecision(primary_label="TASK", summary="Asks for the Q3 numbers.")
+
+
+def test_a_key_refusal_closes_once_a_paid_email_succeeds_and_a_later_refusal_alerts_again(
+    tmp_path: Path,
+) -> None:
+    rig = Rig(tmp_path, fail_alerts=True)
+    assert isinstance(rig.incidents, RecordingIncidents)
+    refused = ProviderError("refused", next_action="k", kind="key_refused", system_wide=True)
+    rig.processor.script["a"] = refused
+    rig.inbox("a")
+    rig.service.tick()
+
+    rig.processor.script["paid"] = replace(line_for("paid"), usd=Decimal("0.01"))
+    rig.inbox("paid")
+    rig.service.tick()
+    rig.processor.script["b"] = refused
+    rig.inbox("b")
+    rig.service.tick()
+
+    assert rig.incidents.cleared.count(IncidentKind.KEY_REFUSED) == 1
+    assert rig.incidents.kinds_reported() == [IncidentKind.KEY_REFUSED] * 2
+
+
+def test_an_email_that_cost_nothing_does_not_prove_the_key_works(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, fail_alerts=True)
+    assert isinstance(rig.incidents, RecordingIncidents)
+    rig.processor.script["rule"] = line_for("rule")
+    rig.inbox("rule")
+
+    rig.service.tick()
+
+    assert IncidentKind.KEY_REFUSED not in rig.incidents.cleared
+
+
+def test_a_call_that_overshoots_the_cap_alerts_when_the_cap_is_hit(rig: Rig) -> None:
+    rig.model.script(*[_a_decision() for _ in range(2)])
+    rig.inbox("m1", "m2")
+
+    rig.service.tick()
+
+    assert rig.model.calls == 2
+    assert len(rig.alerts_sent()) == 1
+
+    rig.inbox()
+    rig.service.tick()
+    assert len(rig.alerts_sent()) == 1

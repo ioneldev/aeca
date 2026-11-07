@@ -140,7 +140,7 @@ class Service:
         if line.outcome == Outcome.FAILED:
             self._deps.watch.email_failed(message_id, line.error or "no error was recorded")
             return _Result.FAILED
-        self._deps.watch.email_processed()
+        self._deps.watch.email_processed(used_model=line.usd > 0)
         return _Result.PROCESSED
 
     def _back_off(self, error: AecaError) -> int:
