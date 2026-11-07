@@ -16,7 +16,13 @@ from support.live_env import rebuild_run_env
 
 from aeca.domain.secret import SecretStr
 
-SECRET_VARIABLES = ("ANTHROPIC_API_KEY", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN")
+SECRET_VARIABLES = (
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_REFRESH_TOKEN",
+    "REHEARSAL_INTERNAL_APP_PASSWORD",
+    "REHEARSAL_EXTERNAL_APP_PASSWORD",
+)
 REDACTED = "[REDACTED]"
 # Shorter than any fragment worth having, and longer than the public prefix sk-ant-api03-.
 FRAGMENT_LENGTH = 16

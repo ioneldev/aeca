@@ -1,4 +1,4 @@
-.PHONY: check preflight image auth start stop logs audit
+.PHONY: check preflight image auth start stop logs audit eval seed-calendar rehearse
 
 # What CI and a reviewer run. Tests marked live or eval touch the network or cost money, so they
 # never run here.
@@ -50,3 +50,20 @@ logs:
 audit:
 	@$(PREFLIGHT) env-run
 	docker compose run --rm --no-deps aeca audit
+
+# Test tools. Each checks .env first, then runs with its values; none starts Docker. They run on
+# the host, so their files go to ./data, which git ignores, not to the container's /data.
+#   make eval           PAID: decides every corpus email for real, and reports accuracy and cost
+#   make seed-calendar  fills next week of the real calendar with events tagged [AECA test]
+#   make rehearse       sends the deliverable corpus emails from the two rehearsal accounts
+eval:
+	@$(PREFLIGHT) env-run
+	AECA_DATA_DIR=data uv run --env-file .env aeca eval
+
+seed-calendar:
+	@$(PREFLIGHT) env-run
+	AECA_DATA_DIR=data uv run --env-file .env aeca seed-calendar
+
+rehearse:
+	@$(PREFLIGHT) env-run
+	AECA_DATA_DIR=data uv run --env-file .env aeca rehearse

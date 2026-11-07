@@ -10,6 +10,7 @@ from aeca.adapters.env_file import set_env_value
 from aeca.adapters.google_auth import ConsentRequest, run_consent
 from aeca.domain.errors import AecaError
 from aeca.settings import load_settings
+from aeca.tools.tool_commands import add_tool_commands
 from aeca.wiring import AUDIT_FILE_NAME, build
 
 REFRESH_TOKEN_VARIABLE = "GOOGLE_REFRESH_TOKEN"
@@ -44,6 +45,7 @@ def _parser() -> argparse.ArgumentParser:
     run.set_defaults(handler=_run)
     audit = commands.add_parser("audit", help="print the audit log")
     audit.set_defaults(handler=_audit)
+    add_tool_commands(commands)
     return parser
 
 
