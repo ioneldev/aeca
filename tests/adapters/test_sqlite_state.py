@@ -255,22 +255,28 @@ def user_version_of(path: Path) -> int:
         connection.close()
 
 
-def test_schema_version_is_one_and_a_mismatch_refuses(tmp_path: Path) -> None:
+def test_a_fresh_file_is_created_at_version_two(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+
+    SqliteState(path)
+
+    assert user_version_of(path) == 2
+
+
+def test_a_later_version_is_refused_and_left_as_it_is(tmp_path: Path) -> None:
     path = tmp_path / "state.db"
     SqliteState(path)
-    assert user_version_of(path) == 1
-
     connection = sqlite3.connect(path)
-    connection.execute("PRAGMA user_version = 2")
+    connection.execute("PRAGMA user_version = 3")
     connection.commit()
     connection.close()
 
     with pytest.raises(AecaError) as refusal:
         SqliteState(path)
 
-    assert "2" in str(refusal.value)
+    assert "3" in str(refusal.value)
     assert "back up" in refusal.value.next_action.lower()
-    assert user_version_of(path) == 2
+    assert user_version_of(path) == 3
 
 
 def test_a_state_in_memory_works_for_tests(tmp_path: Path) -> None:
@@ -436,10 +442,10 @@ def test_a_file_holding_a_journal_table_at_version_zero_is_refused(tmp_path: Pat
     assert table_names_of(path) == {"journal"}
 
 
-def test_a_version_two_file_is_refused_and_leaves_no_lock(tmp_path: Path) -> None:
+def test_a_version_three_file_is_refused_and_leaves_no_lock(tmp_path: Path) -> None:
     path = tmp_path / "state.db"
     connection = sqlite3.connect(path)
-    connection.execute("PRAGMA user_version = 2")
+    connection.execute("PRAGMA user_version = 3")
     connection.close()
 
     with pytest.raises(AecaError):
@@ -610,21 +616,141 @@ def test_completing_or_auditing_a_message_with_no_entry_is_harmless(state: Sqlit
     assert state.journal_incomplete() == []
 
 
-def test_a_version_one_file_from_before_the_journal_flags_gains_them(tmp_path: Path) -> None:
-    path = tmp_path / "state.db"
+# Version 1, exactly as Task 6 wrote it: the layout of the files already on the data volume.
+VERSION_ONE_SCHEMA = """
+CREATE TABLE journal (
+    source_message_id TEXT PRIMARY KEY,
+    decision_json TEXT NOT NULL,
+    actions_json TEXT NOT NULL,
+    awaiting_approval_json TEXT NOT NULL
+);
+CREATE TABLE actions (
+    key TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL,
+    verb TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    source_message_id TEXT NOT NULL,
+    approval_id TEXT,
+    status TEXT NOT NULL,
+    ref TEXT
+);
+CREATE TABLE approvals (
+    id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL,
+    source_message_id TEXT NOT NULL,
+    source_thread_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    actions_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    request_thread_id TEXT,
+    summary TEXT NOT NULL,
+    holds_json TEXT NOT NULL
+);
+CREATE INDEX approvals_by_request_thread ON approvals (request_thread_id);
+CREATE TABLE holds (
+    thread_id TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    start TEXT NOT NULL,
+    end TEXT NOT NULL
+);
+CREATE INDEX holds_by_approval ON holds (approval_id);
+CREATE TABLE attempts (message_id TEXT PRIMARY KEY, count INTEGER NOT NULL);
+CREATE TABLE answers_seen (message_id TEXT PRIMARY KEY);
+CREATE TABLE incidents (kind TEXT PRIMARY KEY);
+CREATE TABLE spend (day TEXT PRIMARY KEY, usd TEXT NOT NULL);
+"""
+
+
+def write_a_version_one_file(path: Path) -> None:
     connection = sqlite3.connect(path)
     connection.executescript(
-        "CREATE TABLE journal (source_message_id TEXT PRIMARY KEY, decision_json TEXT NOT NULL,"
-        " actions_json TEXT NOT NULL, awaiting_approval_json TEXT NOT NULL);"
-        "CREATE TABLE actions (key TEXT PRIMARY KEY, sequence INTEGER NOT NULL, verb TEXT NOT NULL,"
-        " args_json TEXT NOT NULL, source_message_id TEXT NOT NULL, approval_id TEXT,"
-        " status TEXT NOT NULL, ref TEXT);"
+        VERSION_ONE_SCHEMA + "INSERT INTO journal VALUES"
+        " ('m1', '{\"label\":\"TASK\"}',"
+        ' \'[{"verb": "apply_label", "key": "m1:label",'
+        ' "args": {"label": "TASK"}}]\', \'[]\');'
+        "INSERT INTO actions VALUES"
+        " ('m1:label', 1, 'apply_label', '{\"label\": \"TASK\"}', 'm1', NULL, 'done', NULL);"
+        "INSERT INTO attempts VALUES ('m2', 2);"
         "PRAGMA user_version = 1;"
     )
     connection.close()
 
-    state = SqliteState(path)
-    state.journal_record(entry_of(label_action()))
 
-    assert [entry.source_message_id for entry in state.journal_incomplete()] == ["m1"]
+def journal_columns_of(path: Path) -> set[str]:
+    connection = sqlite3.connect(path)
+    try:
+        return {row[1] for row in connection.execute("PRAGMA table_info(journal)")}
+    finally:
+        connection.close()
+
+
+def test_a_version_one_file_migrates_to_version_two_and_keeps_its_rows(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    write_a_version_one_file(path)
+
+    state = SqliteState(path)
+
+    assert user_version_of(path) == 2
+    assert {"audited", "complete"} <= journal_columns_of(path)
+    entry = state.journal_get("m1")
+    assert entry is not None and entry.actions == (label_action(),)
+    assert entry.audited is False
+    assert [e.source_message_id for e in state.journal_incomplete()] == ["m1"]
+    record = state.action_get("m1:label")
+    assert record is not None and record.status is ActionStatus.DONE
+    assert state.attempts_increment("m2") == 3
+
+
+def test_a_migrated_file_opens_again_without_migrating_twice(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    write_a_version_one_file(path)
+    SqliteState(path)
+
+    reopened = SqliteState(path)
+
+    assert user_version_of(path) == 2
+    assert reopened.journal_get("m1") is not None
+
+
+class VersionWriteFails:
+    """A connection whose write of the new schema version fails, as a full disk would."""
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self._real = real
+
+    def execute(self, sql: str, *parameters: object) -> sqlite3.Cursor:
+        if sql.startswith("PRAGMA user_version = 2"):
+            raise sqlite3.OperationalError("disk I/O error")
+        return self._real.execute(sql, *parameters)  # type: ignore[arg-type]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._real, name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "_real":
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._real, name, value)
+
+
+def test_a_failed_migration_leaves_the_file_at_version_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state.db"
+    write_a_version_one_file(path)
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(
+        "aeca.adapters.sqlite_state.sqlite3.connect",
+        lambda *args, **kwargs: VersionWriteFails(real_connect(*args, **kwargs)),
+    )
+
+    with pytest.raises(AecaError) as refusal:
+        SqliteState(path)
+    monkeypatch.undo()
+
+    assert "disk I/O error" in str(refusal.value)
     assert user_version_of(path) == 1
+    assert journal_columns_of(path) == {
+        "source_message_id", "decision_json", "actions_json", "awaiting_approval_json",
+    }  # fmt: skip
+    assert write_lock_is_free(path)

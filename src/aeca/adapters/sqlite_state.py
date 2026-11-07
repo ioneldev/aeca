@@ -14,7 +14,12 @@ from aeca.domain.errors import AecaError
 from aeca.domain.journal import JournalEntry
 from aeca.domain.time_range import Interval, in_utc
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# Version 2 adds the journal's audited and complete flags to version 1.
+_MIGRATION_FROM_VERSION_1 = (
+    "ALTER TABLE journal ADD COLUMN audited INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE journal ADD COLUMN complete INTEGER NOT NULL DEFAULT 0",
+)
 
 _SCHEMA = """
 CREATE TABLE journal (
@@ -62,8 +67,6 @@ CREATE TABLE spend (day TEXT PRIMARY KEY, usd TEXT NOT NULL);
 """
 
 _ACTION_COLUMNS = "key, verb, args_json, source_message_id, approval_id, status, ref"
-# Added to the version-1 journal before its layout was frozen; a file written earlier lacks them.
-_JOURNAL_FLAGS = ("audited", "complete")
 
 
 class SqliteState:
@@ -85,7 +88,9 @@ class SqliteState:
     def _prepare_schema(self, path: Path) -> None:
         found = self._connection.execute("PRAGMA user_version").fetchone()[0]
         if found == SCHEMA_VERSION:
-            self._add_missing_journal_flags()
+            return
+        if found == 1:
+            self._migrate_from_version_1()
             return
         if found != 0:
             raise AecaError(
@@ -105,13 +110,13 @@ class SqliteState:
             )
         self._create_schema()
 
-    def _add_missing_journal_flags(self) -> None:
-        present = {row["name"] for row in self._connection.execute("PRAGMA table_info(journal)")}
-        for flag in _JOURNAL_FLAGS:
-            if flag not in present:
-                self._connection.execute(
-                    f"ALTER TABLE journal ADD COLUMN {flag} INTEGER NOT NULL DEFAULT 0"
-                )
+    # One transaction: SQLite rolls back ALTER TABLE and user_version too, so a failure leaves
+    # the file at version 1, whole, for the next start to migrate again.
+    def _migrate_from_version_1(self) -> None:
+        with self._transaction() as connection:
+            for statement in _MIGRATION_FROM_VERSION_1:
+                connection.execute(statement)
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _holds_any_table(self) -> bool:
         row = self._connection.execute(
