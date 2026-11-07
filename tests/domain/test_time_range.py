@@ -1,6 +1,7 @@
 """An Interval guards the calendar holds, so its edges are pinned down here."""
 
 from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -74,3 +75,32 @@ def test_the_same_wall_clock_in_different_offsets_is_not_an_overlap() -> None:
     )
 
     assert not paris.overlaps(bucharest)
+
+
+def test_an_interval_across_the_autumn_clock_change_is_compared_as_instants() -> None:
+    zone = ZoneInfo("Europe/Bucharest")
+    first_half_past_three = datetime(2026, 10, 25, 0, 30, tzinfo=UTC).astimezone(zone)
+    second_half_past_three = datetime(2026, 10, 25, 1, 30, tzinfo=UTC).astimezone(zone)
+
+    interval = Interval(start=first_half_past_three, end=second_half_past_three)
+
+    assert interval.end.astimezone(UTC) - interval.start.astimezone(UTC) == timedelta(hours=1)
+
+
+def test_overlap_across_the_autumn_clock_change_is_judged_as_instants() -> None:
+    zone = ZoneInfo("Europe/Bucharest")
+    repeated_hour = Interval(
+        start=datetime(2026, 10, 25, 0, 30, tzinfo=UTC).astimezone(zone),
+        end=datetime(2026, 10, 25, 1, 30, tzinfo=UTC).astimezone(zone),
+    )
+    after_it = Interval(
+        start=datetime(2026, 10, 25, 1, 30, tzinfo=UTC).astimezone(zone),
+        end=datetime(2026, 10, 25, 2, 0, tzinfo=UTC).astimezone(zone),
+    )
+    inside_it = Interval(
+        start=datetime(2026, 10, 25, 1, 0, tzinfo=UTC).astimezone(zone),
+        end=datetime(2026, 10, 25, 1, 45, tzinfo=UTC).astimezone(zone),
+    )
+
+    assert not repeated_hour.overlaps(after_it)
+    assert repeated_hour.overlaps(inside_it)
