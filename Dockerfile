@@ -28,6 +28,8 @@ ENV PATH=/app/.venv/bin:$PATH \
     AECA_DATA_DIR=/data
 
 USER aeca
+# Fails when the last successful poll is older than 3 x POLL_SECONDS (spec §4.12).
+HEALTHCHECK --interval=30s CMD ["aeca", "health"]
 ENTRYPOINT ["aeca"]
 # make start runs the image with no arguments, and make auth overrides this.
 CMD ["run"]

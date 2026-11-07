@@ -16,7 +16,7 @@ from fakes.recording_tracer import RecordingTracer
 from fakes.scripted_model import ScriptedModel
 from google.auth.exceptions import RefreshError
 from support.emails import make_raw
-from support.quiet_service import quiet_watch
+from support.quiet_service import NoCopyLock, NoHeartbeat, quiet_watch
 
 from aeca.adapters.google_errors import classify
 from aeca.adapters.sqlite_state import SqliteState
@@ -89,13 +89,14 @@ class Rig:
             )
         )
 
-    def start_up(self) -> None:
+    def start_up(self, *, acquire_lock: Callable[[], None] = lambda: None) -> None:
         start_up(
             StartUpWork(
                 checks=self.checks,
                 resumer=self.resumer,
                 store=self.store,
                 incidents=self.incidents,
+                acquire_lock=acquire_lock,
             )
         )
 
@@ -119,6 +120,8 @@ class Rig:
                 approvals=_NoApprovals(),
                 watch=quiet_watch(),
                 start_up=start,
+                copy_lock=NoCopyLock(),
+                heartbeat=NoHeartbeat(),
             )
         )
 
@@ -346,3 +349,23 @@ def test_resume_unfinished_skips_the_actions_of_an_approval_that_is_not_approved
     assert resume_unfinished(rig.resumer, rig.store) == 0
     assert _status(rig, gated) == ActionStatus.PENDING.value
     assert rig.mailbox.modify_log == []
+
+
+def test_a_failing_check_never_touches_the_lock(rig: Rig) -> None:
+    rig.model.access_failure = KEY_REFUSED
+    taken: list[str] = []
+
+    with pytest.raises(ProviderError):
+        rig.start_up(acquire_lock=lambda: taken.append("lock"))
+
+    assert taken == []
+
+
+def test_a_refused_lock_stops_the_start_before_anything_is_written(rig: Rig) -> None:
+    def refused() -> None:
+        raise ConfigError("Another copy holds the lock.", next_action="Stop the other copy")
+
+    with pytest.raises(ConfigError, match="Another copy"):
+        rig.start_up(acquire_lock=refused)
+
+    assert rig.nothing_was_written_to_gmail()

@@ -1,4 +1,4 @@
-"""trace.jsonl is evidence and debug.log holds email text: neither may hold a secret."""
+"""trace.jsonl is evidence and the debug log holds email text: neither may hold a secret."""
 
 import json
 import stat
@@ -24,13 +24,18 @@ class FixedClock:
 
 
 def tracer_in(
-    directory: Path, *, rotation: Rotation = ROOMY, debug_enabled: bool = False
+    directory: Path,
+    *,
+    rotation: Rotation = ROOMY,
+    debug_enabled: bool = False,
+    debug_days: int = 7,
 ) -> JsonlTracer:
     return JsonlTracer(
         directory,
         secrets=(SecretStr(SECRET),),
         rotation=rotation,
         debug_enabled=debug_enabled,
+        debug_days=debug_days,
         clock=FixedClock(),
     )
 
@@ -74,7 +79,7 @@ def test_secrets_are_redacted_in_audit_and_trace(tmp_path: Path) -> None:
     tracer.debug(f"full prompt with {SECRET} inside")
 
     everything = (tmp_path / "trace.jsonl").read_text(encoding="utf-8") + (
-        tmp_path / "debug.log"
+        tmp_path / "debug-2026-11-09.log"
     ).read_text(encoding="utf-8")
     assert SECRET not in everything
     assert everything.count(REDACTED) == 3
@@ -102,8 +107,8 @@ def test_debug_log_is_written_only_when_enabled(tmp_path: Path) -> None:
     tracer_in(quiet).debug("body text")
     tracer_in(loud, debug_enabled=True).debug("body text")
 
-    assert not (quiet / "debug.log").exists()
-    assert "body text" in (loud / "debug.log").read_text(encoding="utf-8")
+    assert not (quiet / "debug-2026-11-09.log").exists()
+    assert "body text" in (loud / "debug-2026-11-09.log").read_text(encoding="utf-8")
 
 
 def test_trace_rotates_keeping_five_files(tmp_path: Path) -> None:
@@ -170,7 +175,43 @@ def test_trace_and_debug_files_are_readable_by_their_owner_only(tmp_path: Path) 
 
     modes = {
         path.name: stat.S_IMODE(path.stat().st_mode)
-        for path in [*tmp_path.glob("trace.jsonl*"), *tmp_path.glob("debug.log*")]
+        for path in [*tmp_path.glob("trace.jsonl*"), *tmp_path.glob("debug-2026-11-09.log*")]
     }
-    assert {"trace.jsonl", "trace.jsonl.1", "debug.log", "debug.log.1"} <= set(modes)
+    assert {
+        "trace.jsonl",
+        "trace.jsonl.1",
+        "debug-2026-11-09.log",
+        "debug-2026-11-09.log.1",
+    } <= set(modes)
     assert set(modes.values()) == {0o600}
+
+
+def _debug_files(directory: Path) -> list[str]:
+    return sorted(path.name for path in directory.glob("debug*"))
+
+
+def test_the_debug_log_is_off_by_default_and_old_files_are_removed(tmp_path: Path) -> None:
+    quiet = tmp_path / "quiet"
+    tracer_in(quiet).debug("body text")
+    assert _debug_files(quiet) == []
+
+    loud = tmp_path / "loud"
+    loud.mkdir()
+    for name in (
+        "debug-2026-11-01.log",
+        "debug-2026-11-02.log",
+        "debug-2026-11-02.log.1",
+        "debug-2026-11-09.log",
+    ):
+        (loud / name).write_text("old")
+    (loud / "audit.jsonl").write_text("keep")
+    (loud / "debug-notes.txt").write_text("keep")
+
+    tracer_in(loud, debug_enabled=True, debug_days=7).debug("today")
+
+    assert _debug_files(loud) == [
+        "debug-2026-11-02.log",
+        "debug-2026-11-02.log.1",
+        "debug-2026-11-09.log",
+        "debug-notes.txt",
+    ]

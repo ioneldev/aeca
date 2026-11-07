@@ -216,7 +216,6 @@ def test_runs_as_non_root(image: str) -> None:
 # Whether it can say it is well
 
 
-@pytest.mark.xfail(strict=True, reason="Task 15 adds HEALTHCHECK")
 def test_healthcheck_is_defined(image: str) -> None:
     healthcheck = _image_config(image).get("Healthcheck")
 

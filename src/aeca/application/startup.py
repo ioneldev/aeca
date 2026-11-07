@@ -2,6 +2,7 @@
 restarts a failing container, so a mail from a failing start would be one per restart, and
 Google suspends a new account that sends in bulk (spec §4.9)."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -39,10 +40,14 @@ class StartUpWork:
     resumer: ActionResumer
     store: StateStore
     incidents: IncidentReporter
+    # Raises ConfigError while another copy holds the inbox.
+    acquire_lock: Callable[[], None]
 
 
 def start_up(work: StartUpWork) -> None:
     startup_checks(work.checks)
+    # Before the resume, which can send: a copy that must not run sends nothing.
+    work.acquire_lock()
     # The key just worked, so a refusal recorded by an earlier run is over.
     work.incidents.clear(IncidentKind.KEY_REFUSED)
     resume_unfinished(work.resumer, work.store)

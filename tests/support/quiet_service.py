@@ -30,3 +30,16 @@ def quiet_watch(incidents: RecordingIncidents | None = None) -> FailureWatch:
 
 def nothing_to_start() -> None:
     return None
+
+
+class NoCopyLock:
+    def ensure_held(self) -> None:
+        return None
+
+    def renew(self) -> None:
+        return None
+
+
+class NoHeartbeat:
+    def beat(self) -> None:
+        return None

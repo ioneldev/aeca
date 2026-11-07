@@ -44,6 +44,20 @@ class Console(Protocol):
     def event(self, kind: str, **fields: object) -> None: ...
 
 
+class CopyLockHeld(Protocol):
+    def ensure_held(self) -> None:
+        """Raises LockLost when another copy has taken the inbox."""
+        ...
+
+    def renew(self) -> None: ...
+
+
+class Heartbeat(Protocol):
+    def beat(self) -> None:
+        """Records, for the health check, that a poll just succeeded."""
+        ...
+
+
 @dataclass(frozen=True)
 class ServiceDeps:
     processor: EmailProcessor
@@ -54,6 +68,8 @@ class ServiceDeps:
     watch: FailureWatch
     # The checks and the resume that must pass before the first poll; they raise AecaError.
     start_up: Callable[[], None]
+    copy_lock: CopyLockHeld
+    heartbeat: Heartbeat
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,12 +104,15 @@ class Service:
 
     def tick(self) -> TickResult:
         results: list[_Result] = []
+        # Outside the try: a lost lock is no outage to back off from, the service must stop.
+        self._deps.copy_lock.ensure_held()
         try:
             self._read_approvals()
             for message_id in self._emails_to_handle():
                 if self._stop.is_set() or _handled(results) == INBOX_MESSAGES_PER_TICK:
                     break
                 results.append(self._process(message_id))
+            self._record_the_poll()
         except Exception as error:
             if not ends_the_tick(error):
                 raise
@@ -103,6 +122,10 @@ class Service:
         self._outages_in_a_row = 0
         self._deps.watch.tick_completed()
         return _tick_result(results, backoff_s=0)
+
+    def _record_the_poll(self) -> None:
+        self._deps.copy_lock.renew()
+        self._deps.heartbeat.beat()
 
     # Spec §4.6: the approval loop runs first, so an answer is read before the inbox loop could
     # see its thread, and a closed approval's holds are free before new mail is planned.
