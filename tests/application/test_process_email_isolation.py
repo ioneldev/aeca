@@ -196,3 +196,24 @@ def test_a_decision_of_the_rule_reaches_the_audit_line(rig: InboxRig) -> None:
     line = rig.processor.process(rig.receive())
 
     assert line is not None and line.rules == ("dmarc_fail_and_link_mismatch",)
+
+
+DROP_NOTE = "urgent: no matching quote"
+
+
+def test_a_dropped_field_is_noted_in_the_audit_line(rig: InboxRig) -> None:
+    rig.next_decision = decision_of(Label.TASK, dropped=(DROP_NOTE,))
+
+    line = rig.processor.process(rig.receive())
+
+    assert line is not None and DROP_NOTE in line.rules
+
+
+def test_a_dropped_field_is_noted_in_a_failed_line_too(rig: InboxRig) -> None:
+    rig.next_decision = decision_of(Label.TASK, dropped=(DROP_NOTE,))
+    message_id = rig.receive()
+    rig.mailbox.modify_failures.append(EmailError("Gmail refused", next_action="none"))
+
+    line = rig.processor.process(message_id)
+
+    assert line is not None and line.outcome == "failed" and DROP_NOTE in line.rules

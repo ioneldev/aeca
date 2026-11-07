@@ -16,6 +16,7 @@ def decision_of(
     urgent_draft: str | None = None,
     meeting: Meeting | None = None,
     rules_fired: tuple[str, ...] = (),
+    dropped: tuple[str, ...] = (),
 ) -> Decision:
     return Decision(
         label=label,
@@ -28,6 +29,6 @@ def decision_of(
         suspected_injection=None,
         decided_by=DecidedBy.MODEL,
         rules_fired=rules_fired,
-        dropped=(),
+        dropped=dropped,
         urgent_quote=urgent_quote,
     )
