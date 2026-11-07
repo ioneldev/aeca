@@ -1,5 +1,7 @@
 # 0049: The rehearsal sends over SMTP with app passwords
 
+**Superseded by [0057](0057-rehearsal-through-mail-app.md)** (Ionel, 2026-11-07). The rehearsal sends through Mail.app, with no new accounts. What follows is kept as it was written.
+
 **Who decided:** Claude. 2026-11-07.
 
 **Decision.**
