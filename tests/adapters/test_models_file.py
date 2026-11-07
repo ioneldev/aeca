@@ -38,3 +38,10 @@ def test_a_bad_file_is_a_config_error_that_says_what_to_do(tmp_path: Path, text:
     with pytest.raises(ConfigError) as raised:
         load_models(write(tmp_path, text))
     assert raised.value.next_action
+
+
+def test_a_missing_file_is_a_config_error_with_a_next_action(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError) as raised:
+        load_models(tmp_path / "nope.yaml")
+    assert raised.value.next_action
+    assert "nope.yaml" in str(raised.value)

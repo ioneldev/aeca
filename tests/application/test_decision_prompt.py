@@ -80,3 +80,23 @@ def test_the_email_cannot_close_its_own_fence() -> None:
 
 def test_label_names_in_the_prompt_match_the_enum() -> None:
     assert Label.SPAM.value in system_prompt()
+
+
+def test_the_system_prompt_names_the_code_computed_facts_as_trustworthy() -> None:
+    prompt = system_prompt()
+    for name in (
+        "auth", "internal", "automated", "bulk", "priority_high", "label_ids", "received_at",
+        "mismatched", "reply_to_differs",
+    ):  # fmt: skip
+        assert name in prompt.split("Written by the sender")[0]
+
+
+def test_the_system_prompt_names_the_sender_written_facts_as_data() -> None:
+    after = system_prompt().split("Written by the sender", 1)[1]
+    for name in ("subject", "sender_name", "link text", "attachment names"):
+        assert name in after
+    assert "suspected_injection" in after
+
+
+def test_the_system_prompt_is_read_once() -> None:
+    assert system_prompt() is system_prompt()

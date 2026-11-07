@@ -258,3 +258,16 @@ def test_replies_that_never_parse_end_as_unknown_after_two_corrections(
 def _paid(cost: Decimal) -> PaidCall:
     template = response_with_text("")
     return PaidCall(usage=template.usage, model=template.model, cost_usd=cost, latency_s=0.1)
+
+
+def test_a_huge_refused_label_is_echoed_bounded_and_visible(
+    deps: DecideDeps, model: ScriptedModel, tracer: RecordingTracer
+) -> None:
+    model.script(md(primary_label="NEWS\u202e" + "Z" * 5000), md(primary_label="TASK"))
+    decide(task_facts(), deps)
+    correction = last_user_text(model, 1)
+    assert len(correction) < 600
+    assert "\u202e" not in correction
+    assert "NEWS" in correction
+    [event] = tracer.of_kind("correction")
+    assert len(str(event.fields["problem"])) < 600

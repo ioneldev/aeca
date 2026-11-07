@@ -24,7 +24,7 @@ def message_body(
     stop_reason: str = "end_turn",
     model: str = "claude-opus-5-5",
     content: list[dict[str, Any]] | None = None,
-    usage: dict[str, int] | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": "msg_1",
@@ -268,3 +268,105 @@ def test_a_malformed_key_is_refused_before_any_request(key: str) -> None:
         AnthropicClient.from_api_key(SecretStr(key), RecordingTracer())
     assert raised.value.system_wide is True
     assert key not in str(raised.value) or key == ""
+
+
+def fallback_block(
+    declined: str = "claude-opus-5-5", served: str = "claude-opus-4-8"
+) -> dict[str, Any]:
+    return {
+        "type": "fallback",
+        "from": {"model": declined},
+        "to": {"model": served},
+        "trigger": {"type": "refusal"},
+    }
+
+
+def test_a_402_billing_failure_is_system_wide_and_not_retried() -> None:
+    harness = Harness(failing(402, "billing_error"))
+    with pytest.raises(ProviderError) as raised:
+        harness.parse()
+    assert (raised.value.kind, raised.value.system_wide) == ("billing", True)
+    assert len(harness.server.requests) == 1
+
+
+def test_a_400_saying_the_credit_balance_is_too_low_is_system_wide() -> None:
+    body = {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "message": "Your credit balance is too low to access the API.",
+        },
+    }
+    harness = Harness(httpx2.Response(400, json=body))
+    with pytest.raises(ProviderError) as raised:
+        harness.parse()
+    assert (raised.value.kind, raised.value.system_wide) == ("billing", True)
+    assert len(harness.server.requests) == 1
+
+
+def test_a_408_is_retried() -> None:
+    harness = Harness(failing(408, "timeout_error"), ok())
+    harness.parse()
+    assert harness.sleeps == [2]
+
+
+def test_the_decision_is_read_from_the_text_after_the_last_fallback_block() -> None:
+    content = [
+        {"type": "text", "text": "I cannot help with"},
+        fallback_block(),
+        {"type": "text", "text": DECISION_JSON},
+    ]
+    decision, _ = Harness(ok(content=content, model="claude-opus-4-8")).parse()
+    assert decision.primary_label == "TASK"
+
+
+def test_with_several_text_blocks_and_no_fallback_the_last_one_is_the_decision() -> None:
+    content = [{"type": "text", "text": "preamble"}, {"type": "text", "text": DECISION_JSON}]
+    decision, _ = Harness(ok(content=content)).parse()
+    assert decision.primary_label == "TASK"
+
+
+def test_each_iteration_of_a_fallback_served_call_is_priced_at_its_own_model() -> None:
+    usage = {
+        "input_tokens": 3000,
+        "output_tokens": 300,
+        "iterations": [
+            {
+                "type": "message",
+                "model": "claude-opus-5-5",
+                "input_tokens": 1000,
+                "output_tokens": 100,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+            {
+                "type": "fallback_message",
+                "model": "claude-opus-4-8",
+                "input_tokens": 2000,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        ],
+    }
+    _, response = Harness(ok(usage=usage, model="claude-opus-4-8")).parse()
+    expected = Decimal("1000") * Decimal("4") / 1_000_000 + Decimal("100") * 20 / 1_000_000
+    expected += Decimal("2000") * 5 / 1_000_000 + Decimal("200") * 25 / 1_000_000
+    assert response.cost_usd == expected
+    assert response.model == "claude-opus-4-8"
+    assert response.usage.input_tokens == 3000
+
+
+def test_a_call_without_iterations_is_priced_at_the_reply_model() -> None:
+    _, response = Harness(ok(model="claude-opus-4-8")).parse()
+    assert float(response.cost_usd) == pytest.approx(1000 * 5e-6 + 100 * 25e-6)
+
+
+def test_an_unpriced_served_model_is_charged_at_the_dearest_rate_and_stops_the_tick() -> None:
+    with pytest.raises(ProviderError) as raised:
+        Harness(ok(model="claude-mystery-1")).parse()
+    error = raised.value
+    assert (error.kind, error.system_wide) == ("unpriced_model", True)
+    assert error.paid_call is not None
+    assert error.paid_call.cost_usd == Decimal(1000) * 5 / 1_000_000 + Decimal(100) * 25 / 1_000_000
+    assert "claude-mystery-1" in str(error)

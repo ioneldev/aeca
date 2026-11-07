@@ -5,14 +5,19 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, NamedTuple, Self
 
 import anthropic
 import httpx2
-from anthropic.types.beta import BetaMessage
+from anthropic.types.beta import (
+    BetaFallbackMessageIterationUsage,
+    BetaMessage,
+    BetaMessageIterationUsage,
+)
 from pydantic import BaseModel, ValidationError
 
-from aeca.adapters.pricing import cost_usd
+from aeca.adapters.pricing import cost_usd, worst_case_cost_usd
 from aeca.application.ports import (
     LLMClient,
     LLMRequest,
@@ -23,6 +28,7 @@ from aeca.application.ports import (
     Tracer,
     Usage,
 )
+from aeca.domain.errors import AecaError
 from aeca.domain.secret import SecretStr
 
 MODELS_FILE = "aeca/config/models.yaml"
@@ -79,11 +85,26 @@ _FAILURES = (
         system_wide=True,
     ),
     _Failure(
+        sdk_error=anthropic.RequestTimeoutError,
+        kind="request_timeout",
+        problem="Anthropic timed out the request, and the retries did not clear it",
+        next_action=RUN_AGAIN,
+        system_wide=True,
+    ),
+    _Failure(
         sdk_error=anthropic.APIStatusError,
         status_code=402,
         kind="billing",
         problem="Anthropic reports a billing problem on this account",
         next_action="Fix the billing in the Anthropic Console",
+        system_wide=True,
+    ),
+    _Failure(
+        sdk_error=anthropic.BadRequestError,
+        message_holds="credit balance",
+        kind="billing",
+        problem="The Anthropic account has run out of credit",
+        next_action="Add credit in the Anthropic Console",
         system_wide=True,
     ),
     _Failure(
@@ -146,7 +167,7 @@ _FAILURES = (
 )
 
 _RETRYABLE_KINDS = frozenset(
-    {"rate_limited", "overloaded", "server_error", "timeout", "connection"}
+    {"rate_limited", "request_timeout", "overloaded", "server_error", "timeout", "connection"}
 )
 
 
@@ -158,11 +179,7 @@ class _Classified:
 
     @property
     def retryable(self) -> bool:
-        return self.failure.kind in _RETRYABLE_KINDS or (
-            self.failure.kind == "unknown"
-            and self.status_code is not None
-            and self.status_code >= 500
-        )
+        return self.failure.kind in _RETRYABLE_KINDS
 
     def as_provider_error(self) -> ProviderError:
         where = (
@@ -299,18 +316,66 @@ def _params(request: LLMRequest, schema: type[BaseModel]) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class _Hop:
+    """The tokens one model was paid for in one call. A fallback-served call has several."""
+
+    model: str
+    usage: Usage
+
+
 def _paid_call(reply: BetaMessage, *, latency_s: float) -> PaidCall:
-    usage = Usage(
-        input_tokens=reply.usage.input_tokens,
-        output_tokens=reply.usage.output_tokens,
-        cache_read=reply.usage.cache_read_input_tokens or 0,
-        cache_write=reply.usage.cache_creation_input_tokens or 0,
+    hops = _hops(reply)
+    total = _total(hops)
+    served_by = hops[-1].model
+    try:
+        cost = sum((cost_usd(hop.model, hop.usage) for hop in hops), Decimal(0))
+    except AecaError as unpriced:
+        raise _unpriced(unpriced, total, served_by, latency_s) from None
+    return PaidCall(usage=total, model=served_by, cost_usd=cost, latency_s=latency_s)
+
+
+# usage.iterations says which model each token was billed at; without it the reply's model served
+# the whole call.
+def _hops(reply: BetaMessage) -> list[_Hop]:
+    hops = [
+        _Hop(model=str(iteration.model or reply.model), usage=_usage_of(iteration))
+        for iteration in reply.usage.iterations or []
+        if isinstance(iteration, BetaMessageIterationUsage | BetaFallbackMessageIterationUsage)
+    ]
+    return hops or [_Hop(model=str(reply.model), usage=_usage_of(reply.usage))]
+
+
+def _usage_of(usage: Any) -> Usage:
+    return Usage(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read=usage.cache_read_input_tokens or 0,
+        cache_write=usage.cache_creation_input_tokens or 0,
     )
-    return PaidCall(
-        usage=usage,
-        model=str(reply.model),
-        cost_usd=cost_usd(str(reply.model), usage),
-        latency_s=latency_s,
+
+
+def _total(hops: list[_Hop]) -> Usage:
+    return Usage(
+        input_tokens=sum(hop.usage.input_tokens for hop in hops),
+        output_tokens=sum(hop.usage.output_tokens for hop in hops),
+        cache_read=sum(hop.usage.cache_read for hop in hops),
+        cache_write=sum(hop.usage.cache_write for hop in hops),
+    )
+
+
+# Raised after the call was paid for, with the dearest known rate so the cap still sees it. It stops
+# the tick: every email the same model serves would hit it again.
+def _unpriced(unpriced: AecaError, usage: Usage, model: str, latency_s: float) -> ProviderError:
+    paid = PaidCall(
+        usage=usage, model=model, cost_usd=worst_case_cost_usd(usage), latency_s=latency_s
+    )
+    return ProviderError(
+        str(unpriced),
+        next_action=unpriced.next_action,
+        kind="unpriced_model",
+        system_wide=True,
+        paid_call=paid,
     )
 
 
@@ -341,7 +406,7 @@ def _read_reply[T: BaseModel](reply: BetaMessage, schema: type[T], response: LLM
             f"the reply was cut off before it ended (stop reason {reply.stop_reason})",
             response=response,
         )
-    text = "".join(block.text for block in reply.content if block.type == "text")
+    text = _decision_text(reply)
     try:
         return schema.model_validate_json(text)
     except ValidationError as error:
@@ -356,3 +421,14 @@ def _describe(error: ValidationError) -> str:
         for problem in error.errors(include_input=False, include_url=False)
     )
     return "; ".join(problems)[:PROBLEM_LIMIT]
+
+
+# A declined model's partial text can come before a fallback block, so only what follows the last
+# one is the answer, and the last text block is the answer when there is none.
+def _decision_text(reply: BetaMessage) -> str:
+    last_fallback = max(
+        (index for index, block in enumerate(reply.content) if block.type == "fallback"),
+        default=-1,
+    )
+    texts = [block.text for block in reply.content[last_fallback + 1 :] if block.type == "text"]
+    return texts[-1] if texts else ""

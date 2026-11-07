@@ -20,9 +20,11 @@ from aeca.domain.errors import AecaError
 from aeca.domain.facts import EmailFacts
 from aeca.domain.labels import Label, ReplyKind
 from aeca.domain.rules import RuleVerdict, rule_verdict
+from aeca.domain.text import bounded, visible
 from aeca.domain.validation import LabelRefused, ValidationContext, validate
 
 MAX_CORRECTIONS = 2
+LABEL_ECHO_LIMIT = 50
 REFUSED = "refused"
 LABEL_CHOICES = ", ".join(label.value for label in Label)
 UNUSABLE_SUMMARY = "The model gave no valid label, so the email is left for the manager."
@@ -90,13 +92,13 @@ class _ModelConversation:
 
     def decide(self) -> Decision:
         self.messages.append({"role": "user", "content": self._first_message()})
-        for correction_number in range(MAX_CORRECTIONS + 1):
+        for attempt_index in range(MAX_CORRECTIONS + 1):
             outcome = self._ask()
             if isinstance(outcome, Decision):
                 return outcome
-            if correction_number == MAX_CORRECTIONS:
+            if attempt_index == MAX_CORRECTIONS:
                 break
-            self._trace_correction(outcome, correction_number)
+            self._trace_correction(outcome, attempt_index)
             self._append_correction(outcome)
         return Decision.fallback(UNUSABLE_SUMMARY)
 
@@ -143,7 +145,8 @@ class _ModelConversation:
         )
         checked = validate(submitted, context)
         if isinstance(checked, LabelRefused):
-            return _Correction(_label_problem(checked.reason), assistant_content)
+            reason = _bounded_reason(checked.reason, submitted.primary_label)
+            return _Correction(_label_problem(reason), assistant_content)
         self._trace_suspected_injection(checked)
         return checked
 
@@ -169,17 +172,26 @@ class _ModelConversation:
                 text=decision.suspected_injection,
             )
 
-    def _trace_correction(self, correction: _Correction, correction_number: int) -> None:
+    def _trace_correction(self, correction: _Correction, attempt_index: int) -> None:
         self.deps.tracer.event(
             "correction",
             message_id=self.facts.message_id,
-            attempt=correction_number + 1,
+            attempt=attempt_index + 1,
             problem=correction.problem,
         )
 
     def _append_correction(self, correction: _Correction) -> None:
         self.messages.append({"role": "assistant", "content": correction.assistant_content})
         self.messages.append({"role": "user", "content": correction.problem})
+
+
+# The refused label is the model's own words, possibly steered by the email, and the correction
+# sits outside the fence, so it goes back short and with nothing invisible in it.
+def _bounded_reason(reason: str, submitted_label: str) -> str:
+    label = submitted_label.strip()
+    if not label:
+        return reason
+    return reason.replace(label, bounded(visible(label), LABEL_ECHO_LIMIT))
 
 
 def _label_problem(reason: str) -> str:

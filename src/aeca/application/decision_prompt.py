@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from functools import cache
 from importlib.resources import files
 from zoneinfo import ZoneInfo
 
@@ -15,6 +16,8 @@ FENCE_CLOSE = "EMAIL>>>"
 DEFUSED_FENCE_CLOSE = "EMAIL>>​>"
 
 
+# Read once, so the prompt that caches is the same string on every call by construction.
+@cache
 def system_prompt() -> str:
     template = files("aeca.application").joinpath("prompts", "decision.md").read_text("utf-8")
     return template.replace("{{LABELS}}", _label_section()).replace(

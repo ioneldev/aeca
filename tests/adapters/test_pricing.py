@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from aeca.adapters.pricing import cost_usd
+from aeca.adapters.pricing import cost_usd, worst_case_cost_usd
 from aeca.application.ports import Usage
 from aeca.domain.errors import AecaError
 
@@ -42,3 +42,21 @@ def test_the_comparison_models_are_priced(model: str, input_rate: str, output_ra
 def test_an_unknown_model_is_an_error_never_a_zero() -> None:
     with pytest.raises(AecaError):
         cost_usd("claude-mystery-1", usage(input_tokens=1))
+
+
+@pytest.mark.parametrize(
+    ("model", "cache_read", "cache_write"),
+    [
+        ("claude-opus-5-5", "0.20", "5.00"),
+        ("claude-opus-4-8", "0.50", "6.25"),
+        ("claude-sonnet-5-5", "0.20", "2.50"),
+        ("claude-haiku-5-5", "0.01", "0.125"),
+    ],
+)
+def test_each_models_cache_rates_are_its_own(model: str, cache_read: str, cache_write: str) -> None:
+    assert cost_usd(model, usage(cache_read=1_000_000)) == Decimal(cache_read)
+    assert cost_usd(model, usage(cache_write=1_000_000)) == Decimal(cache_write)
+
+
+def test_the_worst_case_cost_is_the_dearest_model_so_an_unpriced_call_still_counts() -> None:
+    assert worst_case_cost_usd(usage(output_tokens=1_000_000)) == Decimal("25.00")

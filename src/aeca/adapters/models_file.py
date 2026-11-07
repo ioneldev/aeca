@@ -36,10 +36,10 @@ class ModelsFile(BaseModel):
 
 def load_models(path: Path | None = None) -> ModelsFile:
     source = str(path) if path is not None else "the built-in models.yaml"
-    text = path.read_text(encoding="utf-8") if path is not None else _shipped_text()
     try:
+        text = path.read_text(encoding="utf-8") if path is not None else _shipped_text()
         return ModelsFile.model_validate(yaml.safe_load(text))
-    except (yaml.YAMLError, ValidationError) as error:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, ValidationError) as error:
         raise ConfigError(
             f"Cannot use {source}: {_describe(error)}",
             next_action=(
@@ -52,10 +52,12 @@ def _shipped_text() -> str:
     return files("aeca").joinpath("config", "models.yaml").read_text(encoding="utf-8")
 
 
-def _describe(error: yaml.YAMLError | ValidationError) -> str:
+def _describe(error: Exception) -> str:
     if isinstance(error, ValidationError):
         return "; ".join(
             f"{'.'.join(str(part) for part in problem['loc']) or 'the file'}: {problem['msg']}"
             for problem in error.errors(include_input=False)
         )
-    return "it is not valid YAML"
+    if isinstance(error, yaml.YAMLError):
+        return "it is not valid YAML"
+    return "it cannot be read"

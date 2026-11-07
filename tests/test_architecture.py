@@ -23,14 +23,22 @@ DOMAIN = Layer("domain", ("aeca.domain",))
 APPLICATION = Layer("application", ("aeca.domain", "aeca.application"))
 
 
-def imported_modules(source: str) -> set[str]:
+def imported_modules(source: str, *, package: str) -> set[str]:
+    """Every module the source imports, a relative import resolved against its own package."""
     modules: set[str] = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
             modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            modules.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            modules.update(_modules_of_from_import(node, package))
     return modules
+
+
+def _modules_of_from_import(node: ast.ImportFrom, package: str) -> set[str]:
+    base = package.split(".")[: len(package.split(".")) - (node.level - 1)] if node.level else []
+    resolved = ".".join([*base, *([node.module] if node.module else [])])
+    # `from aeca import adapters` imports a module through a name, so each name counts too.
+    return {resolved, *(f"{resolved}.{alias.name}" for alias in node.names)}
 
 
 def is_inside(module: str, package: str) -> bool:
@@ -46,10 +54,15 @@ def breaks_layer(module: str, layer: Layer) -> bool:
     return top_level not in sys.stdlib_module_names and top_level not in THIRD_PARTY_ALLOWED
 
 
+def package_of(path: Path, root: Path) -> str:
+    return ".".join(path.relative_to(root).parent.parts)
+
+
 def layer_violations(root: Path, layer: Layer) -> list[str]:
     violations = []
     for path in sorted((root / PACKAGE / layer.folder).rglob("*.py")):
-        for module in sorted(imported_modules(path.read_text(encoding="utf-8"))):
+        source = path.read_text(encoding="utf-8")
+        for module in sorted(imported_modules(source, package=package_of(path, root))):
             if breaks_layer(module, layer):
                 violations.append(f"{path.relative_to(root)} imports {module}")
     return violations
@@ -60,7 +73,8 @@ def sdk_leaks(root: Path) -> list[str]:
     for path in sorted((root / PACKAGE).rglob("*.py")):
         if is_inside(".".join(path.relative_to(root).with_suffix("").parts), "aeca.adapters"):
             continue
-        for module in sorted(imported_modules(path.read_text(encoding="utf-8"))):
+        source = path.read_text(encoding="utf-8")
+        for module in sorted(imported_modules(source, package=package_of(path, root))):
             if module.split(".")[0] in SDK_MODULES:
                 leaks.append(f"{path.relative_to(root)} imports {module}")
     return leaks
@@ -91,9 +105,9 @@ def write_module(root: Path, relative: str, source: str) -> None:
 
 def test_the_scanner_catches_an_adapter_import_in_application(tmp_path: Path) -> None:
     write_module(tmp_path, "application/bad.py", "from aeca.adapters import env_file\n")
-    assert layer_violations(tmp_path, APPLICATION) == [
-        "aeca/application/bad.py imports aeca.adapters"
-    ]
+    assert "aeca/application/bad.py imports aeca.adapters" in layer_violations(
+        tmp_path, APPLICATION
+    )
 
 
 def test_the_scanner_catches_a_third_party_import_in_domain(tmp_path: Path) -> None:
@@ -120,3 +134,36 @@ def test_the_scanner_catches_an_sdk_import_outside_adapters(tmp_path: Path) -> N
     write_module(tmp_path, "settings.py", "import httpx2\n")
     write_module(tmp_path, "adapters/ok.py", "import anthropic\n")
     assert sdk_leaks(tmp_path) == ["aeca/settings.py imports httpx2"]
+
+
+def verdict(source: str, layer: Layer) -> bool:
+    package = f"{PACKAGE}.{layer.folder}"
+    return any(breaks_layer(module, layer) for module in imported_modules(source, package=package))
+
+
+def test_an_sdk_import_breaks_the_application_layer() -> None:
+    assert verdict("import anthropic\n", APPLICATION)
+
+
+def test_a_google_client_import_breaks_the_application_layer() -> None:
+    assert verdict("from googleapiclient import discovery\n", APPLICATION)
+
+
+def test_an_absolute_adapter_import_breaks_the_application_layer() -> None:
+    assert verdict("from aeca.adapters import x\n", APPLICATION)
+
+
+def test_a_relative_adapter_import_breaks_the_application_layer() -> None:
+    assert verdict("from ..adapters import x\n", APPLICATION)
+
+
+def test_a_relative_import_of_the_package_itself_is_a_name_import_of_adapters() -> None:
+    assert verdict("from .. import adapters\n", APPLICATION)
+
+
+def test_a_sibling_relative_import_is_allowed_in_application() -> None:
+    assert not verdict("from . import y\nfrom .ports import Clock\n", APPLICATION)
+
+
+def test_a_relative_import_up_into_application_breaks_the_domain_layer() -> None:
+    assert verdict("from ..application import ports\n", DOMAIN)

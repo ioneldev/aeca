@@ -19,17 +19,33 @@ class Rates:
     cache_write: Decimal
 
 
-def _rates(input: str, output: str, cache_read: str, cache_write: str) -> Rates:
-    return Rates(Decimal(input), Decimal(output), Decimal(cache_read), Decimal(cache_write))
-
-
 # Haiku 5.5 charges more above 100K prompt tokens. A decision prompt is the system prompt and one
 # email bounded to 8,000 characters, so that tier is never reached.
 PRICES: dict[str, Rates] = {
-    "claude-opus-5-5": _rates("4.00", "20.00", "0.20", "5.00"),
-    "claude-opus-4-8": _rates("5.00", "25.00", "0.50", "6.25"),
-    "claude-sonnet-5-5": _rates("2.00", "10.00", "0.20", "2.50"),
-    "claude-haiku-5-5": _rates("0.10", "0.50", "0.01", "0.125"),
+    "claude-opus-5-5": Rates(
+        input=Decimal("4.00"),
+        output=Decimal("20.00"),
+        cache_read=Decimal("0.20"),
+        cache_write=Decimal("5.00"),
+    ),
+    "claude-opus-4-8": Rates(
+        input=Decimal("5.00"),
+        output=Decimal("25.00"),
+        cache_read=Decimal("0.50"),
+        cache_write=Decimal("6.25"),
+    ),
+    "claude-sonnet-5-5": Rates(
+        input=Decimal("2.00"),
+        output=Decimal("10.00"),
+        cache_read=Decimal("0.20"),
+        cache_write=Decimal("2.50"),
+    ),
+    "claude-haiku-5-5": Rates(
+        input=Decimal("0.10"),
+        output=Decimal("0.50"),
+        cache_read=Decimal("0.01"),
+        cache_write=Decimal("0.125"),
+    ),
 }
 
 
@@ -47,6 +63,16 @@ def cost_usd(model: str, usage: Usage) -> Decimal:
                 f"Add its price to aeca/adapters/pricing.py, or use one of: {', '.join(PRICES)}"
             ),
         )
+    return _cost(rates, usage)
+
+
+# For a call already paid for at a model nobody priced: the cap must still see it, and the dearest
+# known rate is the safe guess.
+def worst_case_cost_usd(usage: Usage) -> Decimal:
+    return max(_cost(rates, usage) for rates in PRICES.values())
+
+
+def _cost(rates: Rates, usage: Usage) -> Decimal:
     return (
         usage.input_tokens * rates.input
         + usage.output_tokens * rates.output
