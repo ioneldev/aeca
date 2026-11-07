@@ -759,6 +759,7 @@ def test_a_meeting_whose_only_window_spans_the_week_gets_alternatives_not_an_eve
         (Verb.SEND_REPLY, "alternatives")
     ]
     assert line is not None and line.outcome == "awaiting_approval"
+    assert rig.calendar.inserted == []
 
 
 def validated_meeting_for_the_whole_week() -> Decision:

@@ -178,7 +178,7 @@ class _FieldValidation:
             self.dropped.append(f"{where}: start is in the past")
             return None
         end = self._read_end(where, submitted.end)
-        if end is not None and end <= start:
+        if end is not None and in_utc(end) <= in_utc(start):
             self.dropped.append(f"{where}: end is not after start")
             return None
         if end is not None and _is_too_wide(start, end):

@@ -529,3 +529,15 @@ def test_the_width_is_measured_in_utc_when_the_clocks_go_back() -> None:
     overnight = window(start="2027-10-30T20:00", end="2027-10-31T08:00")
 
     assert windows_kept(overnight) == ()
+
+
+def test_an_end_that_is_before_the_start_in_utc_drops_the_window() -> None:
+    # 03:30 does not exist on 2027-03-28 in Bucharest: the clocks jump from 03:00 to 04:00, so
+    # 03:30 reads as 01:30 UTC and 04:00 as 01:00 UTC. The wall clock says the end is later.
+    spring_gap = window(start="2027-03-28T03:30", end="2027-03-28T04:00")
+    ctx = context(text="Tuesday at 3pm")
+
+    result = validated(meeting_decision(spring_gap), ctx)
+
+    assert result.meeting is not None and result.meeting.windows == ()
+    assert result.dropped == ("meeting.windows[0]: end is not after start",)
