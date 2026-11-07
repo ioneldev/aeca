@@ -55,7 +55,7 @@ audit:
 # the host, so their files go to ./data, which git ignores, not to the container's /data.
 #   make eval           PAID: decides every corpus email for real, and reports accuracy and cost
 #   make seed-calendar  fills next week of the real calendar with events tagged [AECA test]
-#   make rehearse       sends the deliverable corpus emails from the two rehearsal accounts
+#   make rehearse       sends the plain deliverable corpus emails through Mail.app, from the two rehearsal addresses
 eval:
 	@$(PREFLIGHT) env-run
 	AECA_DATA_DIR=data uv run --env-file .env aeca eval

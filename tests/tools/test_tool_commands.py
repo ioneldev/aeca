@@ -15,21 +15,19 @@ def tools_environment(monkeypatch: pytest.MonkeyPatch, minimal_run_env: dict[str
         monkeypatch.setenv(name, value)
     for name in (
         "REHEARSAL_INTERNAL_SENDER",
-        "REHEARSAL_INTERNAL_APP_PASSWORD",
         "REHEARSAL_EXTERNAL_SENDER",
-        "REHEARSAL_EXTERNAL_APP_PASSWORD",
     ):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_rehearse_without_its_accounts_names_the_missing_settings_and_connects_nowhere(
+def test_rehearse_without_its_senders_names_the_missing_settings_and_runs_nothing(
     tools_environment: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     code = cli.main(["rehearse"])
 
     err = capsys.readouterr().err
     assert code == 1
-    assert "REHEARSAL_INTERNAL_SENDER" in err and "REHEARSAL_EXTERNAL_APP_PASSWORD" in err
+    assert "REHEARSAL_INTERNAL_SENDER" in err and "REHEARSAL_EXTERNAL_SENDER" in err
 
 
 def test_eval_with_an_unreadable_corpus_says_so(
