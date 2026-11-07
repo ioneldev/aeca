@@ -84,7 +84,7 @@ def test_a_property_value_is_never_read_as_a_result():
     [
         'mx.google.com; spf=pass smtp.mailfrom="a; dmarc=pass',
         "mx.google.com; spf=pass (unterminated; dmarc=pass",
-        "mx.google.com; spf=pass smtp.mailfrom=a\;dmarc=pass; dmarc=fail",
+        r"mx.google.com; spf=pass smtp.mailfrom=a\;dmarc=pass; dmarc=fail",
         "mx.google.com; spf=pass) stray; dmarc=pass",
     ],
 )
@@ -95,3 +95,21 @@ def test_a_malformed_google_header_reads_as_a_dmarc_failure(header):
 def test_a_well_formed_header_is_not_read_as_malformed():
     header = 'mx.google.com; spf=pass smtp.mailfrom="a\\"b"@x (ok (nested)); dmarc=pass'
     assert parse_authentication_results([header]).dmarc == "pass"
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "mx.google.com; dmarc=pass; dmarc=fail",
+        "mx.google.com; DMARC=pass; dmarc=fail",
+        "mx.google.com; dmarc=pass header.from=a; dmarc=pass header.from=b",
+    ],
+)
+def test_a_duplicated_dmarc_result_reads_as_a_failure(header):
+    assert parse_authentication_results([header]).dmarc == "fail"
+
+
+def test_several_dkim_results_are_legitimate_and_the_first_wins():
+    header = "mx.google.com; dkim=pass header.i=@a.com; dkim=pass header.i=@b.com; dmarc=pass"
+    results = parse_authentication_results([header])
+    assert (results.dkim, results.dmarc) == ("pass", "pass")

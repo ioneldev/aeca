@@ -35,14 +35,18 @@ def _authserv_id(value: str) -> str:
     return server_part[0].lower() if server_part else ""
 
 
+# Gmail writes one dkim result per signature but exactly one dmarc result, so a second dmarc result
+# means the header was tampered with or is not what we think it is.
 def _read_results(value: str) -> AuthResults:
     tokens = _tokenise(value)
     found: dict[str, str] = {}
+    dmarc_results = 0
     for segment in tokens.segments[1:]:
         match = RESULT.match(segment)
         if match:
             found.setdefault(match.group(1).lower(), match.group(2).lower())
-    if not tokens.well_formed:
+            dmarc_results += match.group(1).lower() == "dmarc"
+    if not tokens.well_formed or dmarc_results > 1:
         found["dmarc"] = "fail"
     return AuthResults(spf=found.get("spf"), dkim=found.get("dkim"), dmarc=found.get("dmarc"))
 
