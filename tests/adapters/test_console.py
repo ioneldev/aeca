@@ -4,6 +4,7 @@ from decimal import Decimal
 from fakes.fixed_clock import FIXED_NOW, FixedClock
 
 from aeca.adapters.console import JsonConsole
+from aeca.adapters.json_log import MAX_SUBJECT_CHARS
 from aeca.adapters.redactor import REDACTED, Redactor
 from aeca.domain.audit import AuditLine
 from aeca.domain.secret import SecretStr
@@ -74,3 +75,23 @@ def test_a_secret_in_an_event_field_is_redacted() -> None:
 
     assert SECRET not in lines[0]
     assert REDACTED in lines[0]
+
+
+def test_a_secret_straddling_the_subject_cut_leaves_no_head_behind() -> None:
+    lines: list[str] = []
+    subject = "x" * (MAX_SUBJECT_CHARS - 10) + SECRET
+
+    console_writing_to(lines).email(an_audit_line(subject=subject))
+
+    assert SECRET[:10] not in lines[0]
+
+
+def test_a_secret_with_a_quote_and_a_backslash_is_redacted_in_the_printed_line() -> None:
+    awkward = 'pa"ss\\word-with-escapes'
+    lines: list[str] = []
+    console = JsonConsole(lines.append, Redactor((SecretStr(awkward),)), FixedClock())
+
+    console.email(an_audit_line(subject=f"see {awkward} here"))
+
+    assert awkward not in json.loads(lines[0])["subject"]
+    assert REDACTED in json.loads(lines[0])["subject"]

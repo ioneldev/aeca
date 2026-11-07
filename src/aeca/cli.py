@@ -64,10 +64,12 @@ def _auth(arguments: argparse.Namespace) -> int:
 
 def _run(_arguments: argparse.Namespace) -> int:
     settings = load_settings(os.environ, purpose="run")
-    service = build_service(settings)
     stop = threading.Event()
     _stop_on_signals(stop)
-    service.run(stop)
+    service = build_service(settings)
+    # A stop during startup is honoured here: run() would otherwise start its loop first.
+    if not stop.is_set():
+        service.run(stop)
     return 0
 
 

@@ -40,9 +40,10 @@ def decision_of(label: Label, *, urgent: bool = False, finance: bool = False) ->
 
 class Harness:
     def __init__(self) -> None:
-        self.mailbox = FakeMailbox(ACCOUNT)
+        self.journal: list[str] = []
+        self.mailbox = FakeMailbox(ACCOUNT, journal=self.journal)
         self.store = MemoryState()
-        self.audit = MemoryAudit()
+        self.audit = MemoryAudit(self.journal)
         self.budget = Budget(Decimal(5))
         self.decided: list[EmailFacts] = []
         self.next_decision: Decision | Exception = decision_of(Label.TASK)
@@ -221,7 +222,7 @@ def test_an_email_error_adds_error_counts_an_attempt_and_audits_a_failure(
     assert harness.audit.lines == [line]
 
 
-def test_the_third_failure_also_adds_processed(harness: Harness) -> None:
+def test_an_email_failing_three_times_gets_error_and_processed(harness: Harness) -> None:
     harness.next_decision = EmailError("cannot parse", next_action="none")
     message_id = receive(harness)
 
@@ -289,12 +290,63 @@ def test_a_system_wide_error_charges_the_email_nothing(harness: Harness, error: 
     assert harness.store.attempts_increment(message_id) == 1
 
 
-def test_an_email_that_cannot_be_fetched_fails_with_an_empty_audit_subject(
+def test_the_audit_line_is_written_after_the_label_and_before_processed(
+    harness: Harness,
+) -> None:
+    message_id = receive(harness)
+
+    harness.processor.process(message_id)
+
+    assert harness.journal == ["modify:TASK", "audit", "modify:AECA/processed"]
+
+
+def test_an_email_that_failed_before_loses_error_in_the_modify_that_adds_processed(
+    harness: Harness,
+) -> None:
+    message_id = receive(harness, label_ids=("INBOX", ERROR))
+
+    harness.processor.process(message_id)
+
+    last = harness.mailbox.modify_log[-1]
+    assert (last.add, last.remove) == ((PROCESSED,), (ERROR,))
+    assert harness.mailbox.labels_of(message_id) == {"INBOX", "TASK", PROCESSED}
+
+
+def test_an_email_that_never_failed_removes_nothing(harness: Harness) -> None:
+    message_id = receive(harness)
+
+    harness.processor.process(message_id)
+
+    assert all(call.remove == () for call in harness.mailbox.modify_log)
+
+
+def test_an_email_that_cannot_be_fetched_cannot_be_labelled_so_the_failure_is_raised(
     harness: Harness,
 ) -> None:
     harness.mailbox.get_failures["gone"] = EmailError("no such message", next_action="none")
 
-    line = harness.processor.process("gone")
+    with pytest.raises(EmailError, match="gone"):
+        harness.processor.process("gone")
 
-    assert line is not None
-    assert (line.outcome, line.subject, line.sender) == ("failed", "", "")
+    assert harness.store.attempts_increment("gone") == 2
+    assert [(line.outcome, line.subject) for line in harness.audit.lines] == [("failed", "")]
+
+
+def test_a_failure_while_recording_a_failure_is_raised_as_an_email_error(
+    harness: Harness,
+) -> None:
+    harness.next_decision = EmailError("cannot parse", next_action="none")
+    harness.audit.failure = OSError("disk full")
+    message_id = receive(harness)
+
+    with pytest.raises(EmailError, match="disk full"):
+        harness.processor.process(message_id)
+
+
+def test_a_system_wide_error_while_recording_a_failure_is_not_hidden(harness: Harness) -> None:
+    harness.next_decision = EmailError("cannot parse", next_action="none")
+    harness.audit.failure = CredentialsRevoked("revoked", next_action="none")
+    message_id = receive(harness)
+
+    with pytest.raises(CredentialsRevoked):
+        harness.processor.process(message_id)

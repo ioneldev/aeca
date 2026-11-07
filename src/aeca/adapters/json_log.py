@@ -10,18 +10,21 @@ def summary(line: AuditLine) -> str:
     """The one JSON object per line that `make logs` shows for an email.
 
     Redaction is the stdout writer's job, so this stays a pure formatting function."""
-    return json.dumps(
-        {
-            "time": line.time.isoformat(),
-            "outcome": line.outcome,
-            "label": line.label,
-            "message_id": line.message_id,
-            "subject": _printable(line.subject)[:MAX_SUBJECT_CHARS],
-            "approval_id": line.approval_id,
-        },
-        ensure_ascii=True,
-        separators=(",", ":"),
-    )
+    fields = summary_fields(line)
+    fields["subject"] = str(fields["subject"])[:MAX_SUBJECT_CHARS]
+    return json.dumps(fields, ensure_ascii=True, separators=(",", ":"))
+
+
+def summary_fields(line: AuditLine) -> dict[str, object]:
+    """The summary before its subject is cut, so a writer can redact first and cut after."""
+    return {
+        "time": line.time.isoformat(),
+        "outcome": line.outcome,
+        "label": line.label,
+        "message_id": line.message_id,
+        "subject": _printable(line.subject),
+        "approval_id": line.approval_id,
+    }
 
 
 # The subject comes from the sender, and stdout may be a terminal: an escape sequence in it

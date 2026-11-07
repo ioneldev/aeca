@@ -1,8 +1,14 @@
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 
 ActionSummary = tuple[str, str, str]
+
+
+class Outcome(StrEnum):
+    DONE = "done"
+    FAILED = "failed"
 
 
 @dataclass(frozen=True)

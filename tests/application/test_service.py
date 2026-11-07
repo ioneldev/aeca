@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 from fakes.fake_mailbox import FakeMailbox
+from fakes.fixed_clock import FIXED_NOW
 from fakes.recording_console import RecordingConsole
 
 from aeca.application.decide import BudgetExhausted
@@ -36,8 +37,6 @@ class ScriptedProcessor:
 
 
 def line_for(message_id: str, outcome: str = "done") -> AuditLine:
-    from fakes.fixed_clock import FIXED_NOW
-
     return AuditLine(
         time=FIXED_NOW,
         message_id=message_id,
@@ -203,10 +202,21 @@ def test_a_stop_finishes_the_email_in_hand_and_starts_no_other(rig: Rig) -> None
 
     rig.processor.process = stopping_during_the_first_email  # type: ignore[method-assign]
 
-    result = rig.service.tick(stop)
+    rig.service.run(stop)
 
     assert rig.processor.seen == ["a"]
-    assert result.processed == 1
+    assert [line.message_id for line in rig.console.emails] == ["a"]
+
+
+def test_an_email_error_that_escapes_the_processor_is_printed_as_an_event(rig: Rig) -> None:
+    rig.inbox("bad")
+    rig.processor.script["bad"] = EmailError("label refused", next_action="none")
+
+    rig.service.tick()
+
+    assert rig.console.kinds() == ["email_failed"]
+    assert rig.console.events[0].fields["message_id"] == "bad"
+    assert "label refused" in str(rig.console.events[0].fields["error"])
 
 
 def test_run_waits_on_the_stop_event_so_a_stop_is_prompt(rig: Rig) -> None:

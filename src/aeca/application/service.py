@@ -3,17 +3,17 @@ makes the whole service back off instead of failing any email."""
 
 import threading
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
-from aeca.application.decide import BudgetExhausted
-from aeca.application.ports import Mailbox, ProviderError
-from aeca.domain.audit import AuditLine
-from aeca.domain.errors import AecaError, EmailError, SystemWideError
+from aeca.application.ports import Mailbox
+from aeca.application.process_email import ends_the_tick
+from aeca.domain.audit import AuditLine, Outcome
+from aeca.domain.errors import AecaError, EmailError
 from aeca.domain.labels import ALL_USER_LABELS
 
 BACKOFF_SECONDS = (30, 60, 120, 300)
 INBOX_MESSAGES_PER_TICK = 50
-FAILED = "failed"
 
 
 class EmailProcessor(Protocol):
@@ -43,45 +43,56 @@ class TickResult:
     backoff_s: int
 
 
+class _Result(StrEnum):
+    PROCESSED = "processed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class Service:
     def __init__(self, deps: ServiceDeps) -> None:
         self._deps = deps
         self._outages_in_a_row = 0
+        self._stop = threading.Event()
 
     def run(self, stop: threading.Event) -> None:
+        self._stop = stop
         self._deps.mailbox.ensure_labels(ALL_USER_LABELS)
         self._deps.console.event("service_started", poll_seconds=self._deps.poll_seconds)
         while not stop.is_set():
-            result = self.tick(stop)
+            result = self.tick()
             # Waiting on the event, not sleeping, so a stop does not wait out the poll.
             stop.wait(result.backoff_s or self._deps.poll_seconds)
         self._deps.console.event("service_stopped")
 
-    def tick(self, stop: threading.Event | None = None) -> TickResult:
-        processed = failed = 0
+    def tick(self) -> TickResult:
+        results: list[_Result] = []
         try:
             for message_id in self._deps.mailbox.unprocessed_inbox(INBOX_MESSAGES_PER_TICK):
-                if stop is not None and stop.is_set():
+                if self._stop.is_set():
                     break
-                outcome = self._process(message_id)
-                processed += outcome == "processed"
-                failed += outcome == FAILED
-        except (SystemWideError, BudgetExhausted, ProviderError) as error:
-            if not _ends_the_tick(error):
+                results.append(self._process(message_id))
+        except Exception as error:
+            if not ends_the_tick(error):
                 raise
-            return TickResult(processed, failed, self._back_off(error))
+            assert isinstance(error, AecaError)
+            return self._backing_off(results, error)
         self._outages_in_a_row = 0
-        return TickResult(processed, failed, 0)
+        return _tick_result(results, backoff_s=0)
 
-    def _process(self, message_id: str) -> str:
+    def _backing_off(self, results: list[_Result], error: AecaError) -> TickResult:
+        return _tick_result(results, backoff_s=self._back_off(error))
+
+    def _process(self, message_id: str) -> _Result:
         try:
             line = self._deps.processor.process(message_id)
-        except EmailError:
-            return FAILED
+        except EmailError as error:
+            self._deps.console.event("email_failed", message_id=message_id, error=str(error))
+            return _Result.FAILED
         if line is None:
-            return "skipped"
+            return _Result.SKIPPED
         self._deps.console.email(line)
-        return FAILED if line.outcome == FAILED else "processed"
+        return _Result.FAILED if line.outcome == Outcome.FAILED else _Result.PROCESSED
 
     def _back_off(self, error: AecaError) -> int:
         self._outages_in_a_row += 1
@@ -92,7 +103,9 @@ class Service:
         return seconds
 
 
-def _ends_the_tick(error: AecaError) -> bool:
-    if isinstance(error, ProviderError):
-        return error.system_wide
-    return True
+def _tick_result(results: list[_Result], *, backoff_s: int) -> TickResult:
+    return TickResult(
+        processed=results.count(_Result.PROCESSED),
+        failed=results.count(_Result.FAILED),
+        backoff_s=backoff_s,
+    )

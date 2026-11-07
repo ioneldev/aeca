@@ -173,3 +173,18 @@ def test_audit_reads_the_data_volume_when_the_directory_is_not_set(
 
     assert cli.main(["audit"]) == 0
     assert "/data/no-such-file-here.jsonl" in capsys.readouterr().out
+
+
+def test_a_sigterm_during_startup_exits_zero_without_starting_the_loop(
+    monkeypatch: pytest.MonkeyPatch, run_environment: None, restored_signal_handlers: None
+) -> None:
+    service = FakeService()
+
+    def build_while_terminated(_settings: object) -> FakeService:
+        os.kill(os.getpid(), signal.SIGTERM)
+        return service
+
+    monkeypatch.setattr(cli, "build_service", build_while_terminated)
+
+    assert cli.main(["run"]) == 0
+    assert service.ran_with is None

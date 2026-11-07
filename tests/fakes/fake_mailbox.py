@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 
 from aeca.application.ports import MessageSummary
 from aeca.domain.email import RawEmail
+from aeca.domain.errors import EmailError
 from aeca.domain.outgoing import OutgoingMessage, SentMessage
 
 INBOX = "INBOX"
@@ -19,8 +20,12 @@ class ModifyCall:
 
 
 class FakeMailbox:
-    def __init__(self, address: str = "aeca@gmail.com") -> None:
+    def __init__(
+        self, address: str = "aeca@gmail.com", *, journal: list[str] | None = None
+    ) -> None:
         self._address = address
+        # Shared with other fakes, so a test can assert the order across them.
+        self._journal = journal if journal is not None else []
         self._messages: dict[str, RawEmail] = {}
         self.modify_log: list[ModifyCall] = []
         self.ensured_labels: list[str] = []
@@ -75,7 +80,8 @@ class FakeMailbox:
         self.modify_log.append(ModifyCall(message_id, tuple(add), tuple(remove)))
         message = self._messages.get(message_id)
         if message is None:
-            return
+            raise EmailError(f"no message {message_id}", next_action="none")
+        self._journal.append("modify:" + ",".join(add))
         labels = (message.label_ids | set(add)) - set(remove)
         self._messages[message_id] = replace(message, label_ids=frozenset(labels))
 
