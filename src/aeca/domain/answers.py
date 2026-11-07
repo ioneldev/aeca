@@ -13,7 +13,7 @@ from enum import StrEnum
 
 from aeca.domain.email import RawEmail, body_text, parse_message
 from aeca.domain.facts import EmailFacts, same_gmail_account
-from aeca.domain.text import html_to_text
+from aeca.domain.text import html_to_text_with_quotes
 
 
 class Answer(StrEnum):
@@ -56,16 +56,23 @@ MAX_ATTRIBUTION_LINES = 3
 def parse_answer(text: str) -> Answer:
     lines = [_without_leading_blanks(line) for line in text.splitlines()]
     position = _answer_line(lines)
-    if position is None or _an_inline_reply_follows(lines, position):
+    if position is None:
         return Answer.UNCLEAR
-    return ANSWER_WORDS.get(_first_word(lines[position]).casefold(), Answer.UNCLEAR)
+    answer = _answer_in(lines[position])
+    if _contradicted(lines[position + 1 :], answer):
+        return Answer.UNCLEAR
+    return answer
+
+
+def _answer_in(line: str) -> Answer:
+    return ANSWER_WORDS.get(_first_word(line).casefold(), Answer.UNCLEAR)
 
 
 def answer_of(raw: RawEmail) -> Answer:
     """Reads the email itself rather than its facts, which escape invisible characters the
     manager's client may put before the answer."""
     plain, html = body_text(parse_message(raw))
-    text = plain if plain and plain.strip() else html_to_text(html or "")
+    text = plain if plain and plain.strip() else html_to_text_with_quotes(html or "")
     return parse_answer(text)
 
 
@@ -142,19 +149,15 @@ def _a_quote_follows(lines: list[str], end: int) -> bool:
     return following.startswith(QUOTE_MARK)
 
 
-# A reply written between the request's quoted lines may answer each step differently, so one
-# answer cannot stand for the whole approval: text after a quote block that follows the answer
-# makes the reply unclear. The quote and attribution of a reply written above them are fine.
-def _an_inline_reply_follows(lines: list[str], answer: int) -> bool:
-    quote_seen = False
-    for line in lines[answer + 1 :]:
-        if not line:
-            continue
-        if line.startswith(QUOTE_MARK):
-            quote_seen = True
-        elif quote_seen:
-            return True
-    return False
+# Ruling R44: a later unquoted line that starts with a different answer word (an inline reply
+# answering the steps differently, or "Reject ... Approved only if ...") makes the reply unclear.
+# Text without one, such as a disclaimer the mail server appends below the quote, is ignored.
+def _contradicted(later_lines: list[str], answer: Answer) -> bool:
+    return any(
+        _answer_in(line) not in (Answer.UNCLEAR, answer)
+        for line in later_lines
+        if line and not line.startswith(QUOTE_MARK)
+    )
 
 
 def _without_leading_blanks(line: str) -> str:

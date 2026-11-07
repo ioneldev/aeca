@@ -1,4 +1,4 @@
-from aeca.domain.text import bounded, html_to_text, visible
+from aeca.domain.text import bounded, html_to_text, html_to_text_with_quotes, visible
 
 
 def test_text_is_bounded_and_control_characters_escaped():
@@ -68,3 +68,26 @@ def test_ordinary_international_text_is_not_changed():
 
 def test_a_c1_control_is_written_with_two_hex_digits():
     assert visible("\x85") == "\\x85"
+
+
+# The manager's HTML-only reply: quoted text must still read as quoted, as in a plain-text reply.
+
+
+def test_text_inside_a_blockquote_is_quoted_with_a_marker():
+    html = (
+        "<div dir='ltr'>APPROVE<br>thanks</div>"
+        "<div class='gmail_quote'>On Sat, AECA wrote:<br>"
+        "<blockquote class='gmail_quote'>Hello,<br>REJECT"
+        "<blockquote>nested</blockquote></blockquote>"
+        "</div><p>Confidential.</p>"
+    )
+
+    assert html_to_text_with_quotes(html) == (
+        "APPROVE\nthanks\nOn Sat, AECA wrote:\n> Hello,\n> REJECT\n> nested\nConfidential."
+    )
+
+
+def test_without_a_blockquote_it_reads_as_html_to_text():
+    html = "<p>APPROVE</p><script>REJECT</script><div>Fine &amp; good</div>"
+
+    assert html_to_text_with_quotes(html) == html_to_text(html)

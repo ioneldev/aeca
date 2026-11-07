@@ -48,7 +48,7 @@ def test_parse_answer(text: str, answer: str) -> None:
         ("\u200bApprove", Answer.APPROVE),
         ("\ufeff\u200d  reject", Answer.REJECT),
         ("\t\r\nRejected!", Answer.REJECT),
-        ("approve, thanks\nREJECT", Answer.APPROVE),
+        ("approve, thanks\nREJECT", Answer.UNCLEAR),
         ("  > APPROVE\n\u00a0\nreject", Answer.REJECT),
         ("APPROVE\r\n\r\nOn Sat, AECA wrote:\r\n> REJECT", Answer.APPROVE),
     ],
@@ -275,14 +275,12 @@ def test_a_reject_followed_below_the_quote_by_approved_is_unclear() -> None:
     "text",
     [
         INLINE_PER_STEP,
-        "Approve this one.\n> 2. send this reply:\nNo, do not send that.",
         "On reflection, REJECT\nsee what Ana wrote:\n> the request\nApproved items stay",
         "On Sat, AECA wrote:\n> To answer, reply with\nAPPROVE or REJECT as the first word\n"
         "> above any quoted text.\nReject.",
     ],
     ids=[
         "inline-per-step",
-        "inline-without-attribution",
         "answer-word-in-attribution",
         "rewrapped-quote-line",
     ],
@@ -301,4 +299,48 @@ def test_an_inline_reply_or_an_answer_word_in_an_attribution_is_unclear(text: st
     ids=["gmail-top-posted", "proton-top-posted", "bottom-posted-with-signature"],
 )
 def test_an_ordinary_top_or_bottom_posted_answer_is_still_read(text: str) -> None:
+    assert parse_answer(text) is Answer.APPROVE
+
+
+# Ruling R44: only a later unquoted line that starts with a different answer word makes a reply
+# unclear. Text without an answer word, below the quote or anywhere else, is ignored.
+
+LEGAL_DISCLAIMER = (
+    "This e-mail and any attachments are confidential and may be privileged.\n"
+    "If you are not the intended recipient, please notify the sender and delete it.\n"
+    "Any unauthorised use, copying or disclosure is prohibited.\n"
+    "Deutsche Example AG, Registered office: Bonn.\n"
+    "Chair of the Supervisory Board: A. Example.\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "answer"),
+    [
+        (f"APPROVE\n\n> the quoted request\n> more of it\n\n{LEGAL_DISCLAIMER}", Answer.APPROVE),
+        ("APPROVE\n\nSent from my iPhone\n\n> the quoted request\n", Answer.APPROVE),
+        ("APPROVE\n\n> the quoted request\n\nApproved.\n", Answer.APPROVE),
+        ("Reject.\n> the request\nREJECTED, as I said\n", Answer.REJECT),
+        ("APPROVE\n> the quoted request\nREJECT\n", Answer.UNCLEAR),
+        ("APPROVE\nthanks\nRejected\n", Answer.UNCLEAR),
+    ],
+    ids=[
+        "disclaimer-below-the-quote",
+        "signature",
+        "approve-repeated",
+        "reject-repeated",
+        "approve-then-reject",
+        "reject-further-down-unquoted",
+    ],
+)
+def test_only_a_second_different_answer_word_makes_a_reply_unclear(
+    text: str, answer: Answer
+) -> None:
+    assert parse_answer(text) is answer
+
+
+# The trade-off R44 accepts: an inline "no" without an answer word does not stop the first answer.
+def test_an_inline_refusal_without_an_answer_word_does_not_stop_the_first_answer() -> None:
+    text = "Approve this one.\n> 2. send this reply:\nNo, do not send that."
+
     assert parse_answer(text) is Answer.APPROVE

@@ -1224,3 +1224,20 @@ def test_a_message_level_header_defect_is_ignored_even_from_the_managers_domain(
 
     assert_nothing_executed(rig)
     assert only_line_about(rig, forged).rules == ("answer_ignored:sender_ambiguous",)
+
+
+# Ruling R44: a disclaimer the mail server appends below the quote does not stop an approval.
+
+
+def test_a_top_posted_approve_with_a_disclaimer_below_the_quote_executes(rig: ApprovalRig) -> None:
+    opened(rig)
+    rig.answer(
+        "APPROVE\n\nOn Sat, Nov 7, 2026 at 10:00 AM AECA <aeca@gmail.com> wrote:\n"
+        "> Hello,\n> To answer, reply with APPROVE or REJECT as the first word\n\n"
+        "This e-mail is confidential. If you are not the intended recipient, delete it.\n"
+        "Deutsche Example AG, Registered office: Bonn.\n"
+    )
+
+    rig.service.process_all()
+
+    assert_executed_once(rig)

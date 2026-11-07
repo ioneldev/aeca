@@ -14,6 +14,9 @@ LINE_BREAKING_ELEMENTS = frozenset(
     {"br", "p", "div", "li", "tr", "table", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6",
      "blockquote", "pre", "hr", "section", "article", "header", "footer"}
 )  # fmt: skip
+QUOTING_ELEMENT = "blockquote"
+QUOTE_PREFIX = "> "
+LINE_BREAK = "\n"
 WHITESPACE_RUN = re.compile(r"\s+")
 SPACES_AND_TABS = re.compile(r"[ \t\r\f\v]+")
 
@@ -50,7 +53,16 @@ def _is_lone_surrogate(character: str) -> bool:
 
 
 def html_to_text(html: str) -> str:
-    reducer = _TextReducer()
+    return _reduced(html, _TextReducer())
+
+
+def html_to_text_with_quotes(html: str) -> str:
+    """As html_to_text, with each line inside a <blockquote> prefixed "> ", as a plain-text reply
+    quotes: an HTML-only answer to an approval keeps the text it quotes apart from the answer."""
+    return _reduced(html, _QuotingTextReducer())
+
+
+def _reduced(html: str, reducer: "_TextReducer") -> str:
     reducer.feed(html)
     reducer.close()
     return reducer.text()
@@ -59,26 +71,53 @@ def html_to_text(html: str) -> str:
 class _TextReducer(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self._pieces: list[str] = []
+        # Each piece is a line break, or text with whether it sits inside a quote.
+        self._pieces: list[tuple[str, bool]] = []
         self._invisible_depth = 0
+        self._quote_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in INVISIBLE_ELEMENTS:
             self._invisible_depth += 1
         if tag in LINE_BREAKING_ELEMENTS:
-            self._pieces.append("\n")
+            self._pieces.append((LINE_BREAK, False))
 
     def handle_endtag(self, tag: str) -> None:
         if tag in INVISIBLE_ELEMENTS:
             self._invisible_depth = max(0, self._invisible_depth - 1)
         if tag in LINE_BREAKING_ELEMENTS:
-            self._pieces.append("\n")
+            self._pieces.append((LINE_BREAK, False))
 
     def handle_data(self, data: str) -> None:
         if self._invisible_depth == 0:
-            self._pieces.append(WHITESPACE_RUN.sub(" ", data))
+            self._pieces.append((WHITESPACE_RUN.sub(" ", data), self._quote_depth > 0))
 
     def text(self) -> str:
-        lines = ("".join(self._pieces)).split("\n")
-        tidy_lines = (SPACES_AND_TABS.sub(" ", line).strip() for line in lines)
-        return "\n".join(line for line in tidy_lines if line)
+        tidy_lines = (
+            (SPACES_AND_TABS.sub(" ", line).strip(), quoted) for line, quoted in self._lines()
+        )
+        return "\n".join(
+            f"{QUOTE_PREFIX}{line}" if quoted else line for line, quoted in tidy_lines if line
+        )
+
+    def _lines(self) -> list[tuple[str, bool]]:
+        lines: list[tuple[str, bool]] = [("", False)]
+        for text, quoted in self._pieces:
+            if text == LINE_BREAK:
+                lines.append(("", False))
+            else:
+                line, line_quoted = lines[-1]
+                lines[-1] = (line + text, line_quoted or quoted)
+        return lines
+
+
+class _QuotingTextReducer(_TextReducer):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == QUOTING_ELEMENT:
+            self._quote_depth += 1
+        super().handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        super().handle_endtag(tag)
+        if tag == QUOTING_ELEMENT:
+            self._quote_depth = max(0, self._quote_depth - 1)
