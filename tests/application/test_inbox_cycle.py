@@ -7,6 +7,7 @@ from fakes.crash import Killed
 from fakes.recording_console import RecordingConsole
 from support.decisions import decision_of
 from support.inbox_rig import InboxRig
+from support.quiet_service import nothing_to_start, quiet_watch
 
 from aeca.application.process_email import MAX_TRIES
 from aeca.application.service import Service, ServiceDeps
@@ -37,6 +38,8 @@ def service_of(rig: InboxRig) -> tuple[Service, RecordingConsole]:
             console=console,
             poll_seconds=0.01,
             approvals=NoApprovalLoop(),
+            watch=quiet_watch(),
+            start_up=nothing_to_start,
         )
     )
     return service, console

@@ -67,6 +67,8 @@ class FakeMailbox:
         # Raise Killed right after the first write whose journal entry starts with this.
         self.kill_after_entry: str | None = None
         self._ids_issued = 0
+        # Raised by address(), the first call Gmail gets at startup.
+        self.address_failure: Exception | None = None
 
     def add(self, raw: RawEmail) -> None:
         self._messages[raw.message_id] = raw
@@ -87,6 +89,8 @@ class FakeMailbox:
         return [message for message in self.sent if message.to == address]
 
     def address(self) -> str:
+        if self.address_failure is not None:
+            raise self.address_failure
         return self._address
 
     def unprocessed_inbox(self, limit: int) -> list[str]:

@@ -29,6 +29,9 @@ class ScriptedModel:
     def __init__(self) -> None:
         self._steps: deque[ModelDecision | Exception] = deque()
         self.requests: list[LLMRequest] = []
+        # Raised by check_access(), as a refused key is at startup.
+        self.access_failure: Exception | None = None
+        self.access_checks: list[str] = []
 
     @property
     def calls(self) -> int:
@@ -44,3 +47,8 @@ class ScriptedModel:
             raise step
         assert isinstance(step, schema)
         return step, response_with_text(step.model_dump_json())
+
+    def check_access(self, model: str) -> None:
+        self.access_checks.append(model)
+        if self.access_failure is not None:
+            raise self.access_failure

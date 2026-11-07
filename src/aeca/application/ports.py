@@ -107,6 +107,10 @@ class LLMClient(Protocol):
         reply does not fit the schema."""
         ...
 
+    def check_access(self, model: str) -> None:
+        """Costs nothing. Raises ProviderError, kind "key_refused", when the key is refused."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class MessageSummary:

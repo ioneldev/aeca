@@ -147,3 +147,55 @@ def test_requests_and_notices_go_to_manager_address_when_set_else_to_the_account
 
     assert unset.manager_or_account == unset.gmail_address
     assert chosen.manager_or_account == "boss@example.com"
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("MAX_USD_PER_DAY", "0"),
+        ("MAX_USD_PER_DAY", "-1"),
+        ("MAX_USD_PER_DAY", "NaN"),
+        ("MAX_USD_PER_DAY", "Infinity"),
+        ("POLL_SECONDS", "4"),
+        ("MEETING_MINUTES", "4"),
+        ("MEETING_MINUTES", "481"),
+        ("BUFFER_MINUTES", "-1"),
+        ("BUFFER_MINUTES", "121"),
+        ("ALTERNATIVE_DAYS", "0"),
+        ("ALTERNATIVE_DAYS", "31"),
+        ("ALERT_AFTER_FAILURES", "0"),
+        ("DEBUG_LOG_DAYS", "0"),
+        ("WORK_HOURS", "weekdays 9 to 5"),
+        ("TIMEZONE", "Mars/Olympus_Mons"),
+    ],
+)
+def test_a_value_out_of_range_names_its_variable(
+    minimal_run_env: dict[str, str], name: str, value: str
+) -> None:
+    with pytest.raises(ConfigError, match=name) as raised:
+        load_settings({**minimal_run_env, name: value}, purpose="run")
+
+    assert name in raised.value.next_action
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("MAX_USD_PER_DAY", "0.01"),
+        ("POLL_SECONDS", "5"),
+        ("MEETING_MINUTES", "5"),
+        ("MEETING_MINUTES", "480"),
+        ("BUFFER_MINUTES", "0"),
+        ("BUFFER_MINUTES", "120"),
+        ("ALTERNATIVE_DAYS", "1"),
+        ("ALTERNATIVE_DAYS", "30"),
+        ("ALERT_AFTER_FAILURES", "1"),
+        ("DEBUG_LOG_DAYS", "1"),
+        ("WORK_HOURS", "Mon-Sat 08:00-18:00"),
+        ("TIMEZONE", "Europe/Bucharest"),
+    ],
+)
+def test_a_value_on_the_edge_of_its_range_is_accepted(
+    minimal_run_env: dict[str, str], name: str, value: str
+) -> None:
+    load_settings({**minimal_run_env, name: value}, purpose="run")

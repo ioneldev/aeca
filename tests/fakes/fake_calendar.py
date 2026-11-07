@@ -32,6 +32,8 @@ class FakeCalendar:
         self.insert_failures: list[Exception] = []
         # Raise Killed right after the next insert.
         self.kill_after_insert = False
+        # Raised by time_zone(), the call the startup check makes.
+        self.zone_failure: Exception | None = None
 
     def add(self, event: CalendarEvent) -> None:
         self._events = [known for known in self._events if known.id != event.id]
@@ -41,6 +43,8 @@ class FakeCalendar:
         return [event for event in self._events if event.id == event_id]
 
     def time_zone(self) -> str:
+        if self.zone_failure is not None:
+            raise self.zone_failure
         return self._zone
 
     def events(self, window: Interval) -> list[CalendarEvent]:

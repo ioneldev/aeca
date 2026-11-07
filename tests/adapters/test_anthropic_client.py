@@ -370,3 +370,42 @@ def test_a_priced_model_emits_no_unpriced_event() -> None:
     harness = Harness(ok())
     harness.parse()
     assert harness.tracer.of_kind("unpriced_model") == []
+
+
+MODEL_RECORD = {
+    "id": "claude-opus-5-5",
+    "type": "model",
+    "display_name": "Claude Opus 5.5",
+    "created_at": "2026-01-01T00:00:00Z",
+}
+
+
+def test_check_access_asks_for_the_model_record_which_costs_nothing() -> None:
+    harness = Harness(httpx2.Response(200, json=MODEL_RECORD))
+
+    harness.client.check_access("claude-opus-5-5")
+
+    assert harness.server.requests[0].method == "GET"
+    assert harness.server.requests[0].url.path.endswith("/models/claude-opus-5-5")
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_check_access_reports_a_refused_key_as_key_refused(status: int) -> None:
+    kind = "authentication_error" if status == 401 else "permission_error"
+    harness = Harness(failing(status, kind))
+
+    with pytest.raises(ProviderError) as raised:
+        harness.client.check_access("claude-opus-5-5")
+
+    assert (raised.value.kind, raised.value.system_wide) == ("key_refused", True)
+    assert "key" in raised.value.next_action.lower()
+    assert harness.tracer.of_kind("model_retry")
+
+
+def test_check_access_names_a_model_the_api_does_not_know() -> None:
+    harness = Harness(failing(404, "not_found_error"))
+
+    with pytest.raises(ProviderError) as raised:
+        harness.client.check_access("claude-nope")
+
+    assert raised.value.kind == "model_not_found"

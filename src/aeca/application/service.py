@@ -2,13 +2,14 @@
 a system-wide error makes the whole service back off instead of failing any email."""
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
 from aeca.application.failures import ends_the_tick
 from aeca.application.ports import Mailbox
+from aeca.application.watch import FailureWatch
 from aeca.domain.audit import AuditLine, Outcome
 from aeca.domain.errors import AecaError, EmailError
 from aeca.domain.labels import ALL_USER_LABELS
@@ -50,6 +51,9 @@ class ServiceDeps:
     console: Console
     poll_seconds: float
     approvals: ApprovalLoop
+    watch: FailureWatch
+    # The checks and the resume that must pass before the first poll; they raise AecaError.
+    start_up: Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +77,7 @@ class Service:
 
     def run(self, stop: threading.Event) -> None:
         self._stop = stop
+        self._deps.start_up()
         self._deps.mailbox.ensure_labels(ALL_USER_LABELS)
         self._deps.console.event("service_started", poll_seconds=self._deps.poll_seconds)
         while not stop.is_set():
@@ -93,8 +98,10 @@ class Service:
             if not ends_the_tick(error):
                 raise
             assert isinstance(error, AecaError)
+            self._deps.watch.tick_ended_by(error)
             return self._backing_off(results, error)
         self._outages_in_a_row = 0
+        self._deps.watch.tick_completed()
         return _tick_result(results, backoff_s=0)
 
     # Spec §4.6: the approval loop runs first, so an answer is read before the inbox loop could
@@ -125,11 +132,16 @@ class Service:
             line = self._deps.processor.process(message_id)
         except EmailError as error:
             self._deps.console.event("email_failed", message_id=message_id, error=str(error))
+            self._deps.watch.email_failed(message_id, str(error))
             return _Result.FAILED
         if line is None:
             return _Result.SKIPPED
         self._deps.console.email(line)
-        return _Result.FAILED if line.outcome == Outcome.FAILED else _Result.PROCESSED
+        if line.outcome == Outcome.FAILED:
+            self._deps.watch.email_failed(message_id, line.error or "no error was recorded")
+            return _Result.FAILED
+        self._deps.watch.email_processed(used_model=line.usd > 0)
+        return _Result.PROCESSED
 
     def _back_off(self, error: AecaError) -> int:
         self._outages_in_a_row += 1
