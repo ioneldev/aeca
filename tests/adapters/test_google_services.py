@@ -81,6 +81,21 @@ def test_a_missing_ca_file_is_a_config_error_naming_the_variable_and_path(
     assert str(missing) in str(raised.value)
 
 
+def test_an_unwritable_data_dir_is_a_config_error_naming_the_variable_and_path(
+    built: RecordingBuild, minimal_run_env: dict[str, str], tmp_path: Path
+) -> None:
+    ca_file = tmp_path / "proxy-ca.pem"
+    ca_file.write_text("-----PROXY CA-----\n")
+    not_a_directory = tmp_path / "file"
+    not_a_directory.write_text("")
+
+    with pytest.raises(ConfigError) as raised:
+        build_google_services(settings_with_ca(minimal_run_env, ca_file, not_a_directory))
+
+    assert "AECA_DATA_DIR" in str(raised.value)
+    assert str(not_a_directory) in str(raised.value)
+
+
 def test_without_extra_ca_certs_the_defaults_stand(
     built: RecordingBuild, minimal_run_env: dict[str, str]
 ) -> None:

@@ -80,7 +80,13 @@ def _write_combined_bundle(extra_ca_certs: Path, data_dir: Path) -> Path:
             f"EXTRA_CA_CERTS={extra_ca_certs} cannot be read: {error.strerror}.",
             next_action="Point EXTRA_CA_CERTS at the proxy's root certificate file, then run again",
         ) from error
-    data_dir.mkdir(parents=True, exist_ok=True)
     bundle = data_dir / COMBINED_BUNDLE_NAME
-    bundle.write_bytes(Path(httplib2.CA_CERTS).read_bytes() + b"\n" + extra)
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        bundle.write_bytes(Path(httplib2.CA_CERTS).read_bytes() + b"\n" + extra)
+    except OSError as error:
+        raise ConfigError(
+            f"AECA_DATA_DIR={data_dir} cannot be written: {error.strerror}.",
+            next_action="Point AECA_DATA_DIR at a writable folder, then run again",
+        ) from error
     return bundle

@@ -12,6 +12,7 @@ import re
 from collections.abc import Callable, Mapping
 
 import pytest
+from support.live_env import rebuild_run_env
 
 from aeca.domain.secret import SecretStr
 
@@ -77,6 +78,15 @@ def api_key(request: pytest.FixtureRequest) -> SecretStr:
     if key is None:
         pytest.fail("ANTHROPIC_API_KEY is not set: run these tests with make eval, not pytest")
     return key
+
+
+@pytest.fixture
+def live_run_env(request: pytest.FixtureRequest) -> dict[str, str]:
+    """Never print this: it holds the real secrets, for load_settings alone."""
+    env = rebuild_run_env(request.config.stash[GUARD].secrets, os.environ)
+    if env is None:
+        pytest.skip("needs the real credentials: run with uv run --env-file .env pytest -m live")
+    return env
 
 
 @pytest.fixture

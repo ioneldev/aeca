@@ -1,7 +1,6 @@
 """Reads the real account. Needs GOOGLE_REFRESH_TOKEN; run with
 `uv run --env-file .env pytest -m live -q`."""
 
-import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,9 +12,9 @@ from aeca.settings import load_settings
 pytestmark = pytest.mark.live
 
 
-@pytest.fixture(scope="module")
-def services() -> GoogleServices:
-    return build_google_services(load_settings(dict(os.environ), purpose="run"))
+@pytest.fixture
+def services(live_run_env: dict[str, str]) -> GoogleServices:
+    return build_google_services(load_settings(live_run_env, purpose="run"))
 
 
 def test_the_profile_has_an_address(services: GoogleServices) -> None:
