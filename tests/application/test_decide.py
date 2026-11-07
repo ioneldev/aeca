@@ -271,3 +271,61 @@ def test_a_huge_refused_label_is_echoed_bounded_and_visible(
     assert "NEWS" in correction
     [event] = tracer.of_kind("correction")
     assert len(str(event.fields["problem"])) < 600
+
+
+SECRET_BODY = "the vault code is 4711"
+
+
+def secret_facts() -> EmailFacts:
+    return make_facts(subject="Review", text=SECRET_BODY, message_id="m-debug")
+
+
+def lines_holding(tracer: RecordingTracer, needle: str) -> list[str]:
+    return [line for line in tracer.debug_lines if needle in line]
+
+
+def test_a_decided_email_writes_its_text_and_the_models_reply_to_the_debug_log(
+    deps: DecideDeps, model: ScriptedModel, tracer: RecordingTracer
+) -> None:
+    model.script(md(primary_label="TASK", summary="A distinctive summary"))
+    decide(secret_facts(), deps)
+    [email_line] = lines_holding(tracer, SECRET_BODY)
+    assert "m-debug" in email_line
+    assert last_user_text(model, 0) in email_line
+    [reply_line] = lines_holding(tracer, "A distinctive summary")
+    assert "m-debug" in reply_line
+
+
+def test_a_correction_round_writes_one_reply_entry_per_attempt(
+    deps: DecideDeps, model: ScriptedModel, tracer: RecordingTracer
+) -> None:
+    model.script(md(primary_label="X"), md(primary_label="Y"), md(primary_label="Z"))
+    decide(secret_facts(), deps)
+    for attempt_index, label in enumerate("XYZ"):
+        [line] = lines_holding(tracer, f'\\"primary_label\\":\\"{label}\\"')
+        assert f"attempt {attempt_index}" in line
+
+
+def test_an_unparseable_reply_is_written_to_the_debug_log_too(
+    deps: DecideDeps, model: ScriptedModel, tracer: RecordingTracer
+) -> None:
+    model.script(ReplyUnusable("cut off", response=response_with_text("{broken")), md())
+    decide(secret_facts(), deps)
+    assert len(lines_holding(tracer, "{broken")) == 1
+    assert len(lines_holding(tracer, "attempt ")) == 2
+
+
+def test_a_rule_decision_writes_no_reply_entry_and_no_email_entry(
+    deps: DecideDeps, tracer: RecordingTracer
+) -> None:
+    decide(phishing_facts(), deps)
+    assert tracer.debug_lines == []
+
+
+def test_the_trace_events_carry_no_email_body(
+    deps: DecideDeps, model: ScriptedModel, tracer: RecordingTracer
+) -> None:
+    model.script(md(primary_label="X"), md(primary_label="TASK"))
+    decide(secret_facts(), deps)
+    assert tracer.events
+    assert all(SECRET_BODY not in str(event.fields) for event in tracer.events)

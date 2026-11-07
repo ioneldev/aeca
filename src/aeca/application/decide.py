@@ -1,5 +1,6 @@
 """Decides one email: rules that decide alone first, then one model call that code validates."""
 
+import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -92,8 +93,9 @@ class _ModelConversation:
 
     def decide(self) -> Decision:
         self.messages.append({"role": "user", "content": self._first_message()})
+        self._debug_the_email()
         for attempt_index in range(MAX_CORRECTIONS + 1):
-            outcome = self._ask()
+            outcome = self._ask(attempt_index)
             if isinstance(outcome, Decision):
                 return outcome
             if attempt_index == MAX_CORRECTIONS:
@@ -105,17 +107,29 @@ class _ModelConversation:
     def _first_message(self) -> str:
         return first_user_message(self.facts, now=self.deps.clock.now(), zone=self.deps.zone)
 
-    def _ask(self) -> Decision | _Correction:
+    def _ask(self, attempt_index: int) -> Decision | _Correction:
         self._refuse_if_budget_is_spent()
         try:
             submitted, response = self.deps.model.parse(self._request(), ModelDecision)
         except ReplyUnusable as unusable:
             self._charge(unusable.response)
+            self._debug_the_reply(unusable.response.content, attempt_index)
             return _Correction(_schema_problem(unusable.problem), unusable.response.content)
         except ProviderError as error:
             return self._after_provider_error(error)
         self._charge(response)
+        self._debug_the_reply(response.content, attempt_index)
         return self._validated(submitted, response.content)
+
+    def _debug_the_email(self) -> None:
+        text = self.messages[0]["content"]
+        self.deps.tracer.debug(f"email {self.facts.message_id} as the model sees it:\n{text}")
+
+    def _debug_the_reply(self, content: tuple[object, ...], attempt_index: int) -> None:
+        reply = json.dumps(content, default=str)
+        self.deps.tracer.debug(
+            f"reply to {self.facts.message_id}, attempt {attempt_index}:\n{reply}"
+        )
 
     def _refuse_if_budget_is_spent(self) -> None:
         if self.deps.budget.exhausted():
