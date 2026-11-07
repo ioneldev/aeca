@@ -189,6 +189,16 @@ def test_a_follow_up_looks_in_the_senders_sent_mailbox_and_replies_to_the_earlie
         assert fragment in reply.script
 
 
+def test_the_sending_account_is_found_with_a_loop_not_a_whose_filter() -> None:
+    _, runner, _ = run(follow_up_corpus())
+
+    for run_of_script in runner.runs:
+        assert "repeat with mailAccount in every account" in run_of_script.script
+        assert "(email addresses of mailAccount) contains senderAddress" in run_of_script.script
+        assert "accounts whose" not in run_of_script.script
+        assert "AECA_NO_MAIL_ACCOUNT" in run_of_script.script
+
+
 def test_a_follow_up_falls_back_to_a_new_re_message_when_the_earlier_one_is_not_in_sent() -> None:
     _, runner, _ = run(follow_up_corpus())
 

@@ -22,6 +22,8 @@ NO_MAIL_ACCOUNT_MARKER = "AECA_NO_MAIL_ACCOUNT"
 REPLY_PREFIX = "Re: "
 FIXED_ARGUMENT_COUNT = 5
 
+# The account check loops over `every account`: Mail.app answers `accounts whose email addresses
+# contains ...` with an empty result even for an address an account has.
 # Values reach the script as `on run argv` items and never inside a string literal, so no subject
 # or body can break out of it. Items 1-5: sender, recipient, subject, body, followed subject ("" for
 # a first email). Items 6 onwards: attachment paths.
@@ -32,9 +34,11 @@ _SCRIPT_TEMPLATE = f"""on run argv
     set messageBody to item 4 of argv
     set followedSubject to item 5 of argv
     tell application "Mail"
-        if (count of (accounts whose email addresses contains senderAddress)) is 0 then
-            error "{NO_MAIL_ACCOUNT_MARKER}"
-        end if
+        set senderAccountFound to false
+        repeat with mailAccount in every account
+            if (email addresses of mailAccount) contains senderAddress then set senderAccountFound to true
+        end repeat
+        if not senderAccountFound then error "{NO_MAIL_ACCOUNT_MARKER}"
 @COMPOSE@
         tell outgoing
             make new to recipient at end of to recipients with properties {{address:recipientAddress}}
