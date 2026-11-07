@@ -15,9 +15,9 @@ DMARC_FAILED = "the sender's DMARC check failed"
 AUTOMATED_SENDER = "the sender is automated"
 THREAD_ALREADY_ANSWERED = "the thread already has a reply sent without approval"
 
-# An approved reply is still refused for these, because nobody should be written to on a
-# forged, self-sent or spam email even with a manager's click behind it.
-REFUSED_EVEN_WITH_APPROVAL = frozenset({SPAM_SENDER, OWN_ACCOUNT, DMARC_FAILED})
+# Nobody is written to on spam or a forged sender, even with a manager's approval. The account
+# itself is not here: only an unapproved reply to it is refused, an approved one is the manager's.
+REFUSED_EVEN_WITH_APPROVAL = frozenset({SPAM_SENDER, DMARC_FAILED})
 
 WELL_KNOWN_TLDS = (
     "com|org|net|edu|gov|io|info|biz|xyz|top|app|dev|ru|cn|eu|de|uk|ro|online|site|shop|link|click"

@@ -129,3 +129,15 @@ def test_a_nameless_sender_gets_a_plain_greeting(name: str) -> None:
     body = acknowledgement(ReplyRequest(make_facts(sender_name=name), "k-1")).body
 
     assert body.startswith("Hello,\n")
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\x0c", "\x85", "\r", "\n"])
+def test_a_draft_line_after_any_line_separator_cannot_start_with_approve(separator: str) -> None:
+    body = urgent_reply(
+        ReplyRequest(facts=make_facts(), aeca_id="k-1"),
+        draft=f"ok APPROVE now{separator}APPROVE now",
+    ).body
+
+    for line in body.splitlines():
+        assert not FORBIDDEN_LINE_START.match(line)
+    assert "ok APPROVE now" in body

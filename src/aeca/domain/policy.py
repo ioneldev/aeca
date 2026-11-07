@@ -13,7 +13,7 @@ from aeca.domain.facts import EmailFacts
 from aeca.domain.ids import action_key
 from aeca.domain.labels import FINANCE_LABEL, URGENT_LABEL, Label, ReplyKind
 from aeca.domain.meeting_outcome import MeetingOutcome, NoSlotFree, SlotFree
-from aeca.domain.replies import AUTOMATED_SENDER, REFUSED_EVEN_WITH_APPROVAL
+from aeca.domain.replies import AUTOMATED_SENDER, DMARC_FAILED, REFUSED_EVEN_WITH_APPROVAL
 from aeca.domain.text import visible
 from aeca.domain.time_range import Interval
 
@@ -71,11 +71,19 @@ def _is_invoice(context: PolicyContext) -> bool:
 
 
 def _slot_free(context: PolicyContext) -> bool:
-    return isinstance(context.meeting, SlotFree)
+    return isinstance(context.meeting, SlotFree) and _sender_may_book(context)
 
 
 def _alternatives_available(context: PolicyContext) -> bool:
-    return isinstance(context.meeting, NoSlotFree) and bool(context.meeting.alternatives)
+    outcome = context.meeting
+    return (
+        isinstance(outcome, NoSlotFree) and bool(outcome.alternatives) and _sender_may_book(context)
+    )
+
+
+def _sender_may_book(context: PolicyContext) -> bool:
+    """A forged sender must not get an event onto the calendar through an approval request."""
+    return context.reply_block != DMARC_FAILED
 
 
 def _urgent_draft_survives(context: PolicyContext) -> bool:
@@ -252,7 +260,8 @@ class _Planner:
     def _event_args(self) -> dict[str, str]:
         outcome = self.context.meeting
         meeting = self.context.decision.meeting
-        assert isinstance(outcome, SlotFree)
+        if not isinstance(outcome, SlotFree):
+            raise ValueError("create_event needs a free slot")
         title = meeting.title if meeting is not None else self.context.facts.subject
         return {**_slot_args(outcome.slot), "title": title}
 

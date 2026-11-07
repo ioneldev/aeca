@@ -123,4 +123,7 @@ def _references(facts: EmailFacts) -> str | None:
 
 
 def _without_answer_words_at_line_start(body: str) -> str:
-    return "\n".join(ANSWER_WORD_AT_LINE_START.sub(r"\1| ", line) for line in body.split("\n"))
+    # splitlines, not split("\n"): the other line separators start a line in some readers too.
+    return "".join(
+        ANSWER_WORD_AT_LINE_START.sub(r"\1| ", line) for line in body.splitlines(keepends=True)
+    )

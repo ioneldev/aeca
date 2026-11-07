@@ -1,3 +1,4 @@
+from dataclasses import fields
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -235,16 +236,6 @@ def test_an_invitation_already_on_the_calendar_gets_its_label_only() -> None:
     assert result.for_approval == () and result.holds == ()
 
 
-def test_a_meeting_confirmation_to_a_forged_sender_is_not_asked_for() -> None:
-    result = plan(
-        decision(Label.MEETING_REQUEST, meeting=MEETING),
-        meeting=NoSlotFree(THREE_SLOTS),
-        reply_block=DMARC_FAILED,
-    )
-
-    assert result.for_approval == () and result.holds == ()
-
-
 INTERNAL = make_facts(internal=True)
 DRAFT = "On it, I will call you."
 
@@ -372,6 +363,72 @@ def test_inbox_removing_verbs_run_last() -> None:
         assert all(v in inbox_removers for v in tail), label
 
 
+SELF_SENDER = make_facts(sender=ACCOUNT_ADDRESS, internal=True)
+OWN_ACCOUNT_BLOCK = "the sender is the account itself"
+
+
+def test_a_meeting_from_the_account_itself_still_asks_for_the_event_then_the_confirmation() -> None:
+    result = plan(
+        decision(Label.MEETING_REQUEST, meeting=MEETING),
+        facts=SELF_SENDER,
+        meeting=SlotFree(SLOT, False),
+        reply_block=OWN_ACCOUNT_BLOCK,
+    )
+
+    assert shape(result.for_approval) == [("create_event", ""), ("send_reply", "confirmation")]
+    assert result.holds == (SLOT,)
+
+
+def test_a_sales_decline_from_the_account_itself_waits_for_approval_when_the_setting_is_on() -> (
+    None
+):
+    result = plan(
+        decision(Label.SALES_OUTREACH),
+        facts=SELF_SENDER,
+        sales_decline_needs_approval=True,
+        reply_block=OWN_ACCOUNT_BLOCK,
+    )
+
+    assert shape(result.for_approval) == [("send_reply", "decline")]
+
+
+def test_an_urgent_draft_to_the_account_itself_is_kept_and_gated_without_a_separate_notice() -> (
+    None
+):
+    result = plan(
+        decision(Label.TASK, urgent=True, urgent_draft=DRAFT),
+        facts=SELF_SENDER,
+        reply_block=OWN_ACCOUNT_BLOCK,
+    )
+
+    assert shape(result.for_approval) == [("send_reply", "urgent_reply")]
+    assert all(action.verb is not Verb.NOTIFY_MANAGER for action in result.automatic)
+
+
+def test_an_automatic_reply_to_the_account_itself_is_still_refused() -> None:
+    result = plan(
+        decision(Label.TASK, reply=ReplyKind.ACKNOWLEDGEMENT),
+        facts=SELF_SENDER,
+        reply_block=OWN_ACCOUNT_BLOCK,
+    )
+
+    assert shape(result.automatic) == [("apply_label", "TASK")]
+
+
+@pytest.mark.parametrize(
+    "outcome", [SlotFree(SLOT, False), NoSlotFree(THREE_SLOTS)], ids=["free-slot", "alternatives"]
+)
+def test_a_meeting_from_a_forged_sender_gets_its_label_only(outcome: MeetingOutcome) -> None:
+    result = plan(
+        decision(Label.MEETING_REQUEST, meeting=MEETING),
+        meeting=outcome,
+        reply_block=DMARC_FAILED,
+    )
+
+    assert shape(result.automatic) == [("apply_label", "MEETING_REQUEST")]
+    assert result.for_approval == () and result.holds == ()
+
+
 def test_every_step_names_an_existing_predicate_and_verb() -> None:
     steps = [step for steps in POLICY_STEPS.values() for step in steps] + list(URGENT_STEPS)
 
@@ -380,6 +437,9 @@ def test_every_step_names_an_existing_predicate_and_verb() -> None:
         assert step.when in PREDICATES
         assert Verb(step.verb) in Verb
         assert step.approval in {"none", "required"} or step.approval.startswith("setting:")
+        if step.approval.startswith("setting:"):
+            setting = step.approval.removeprefix("setting:").lower()
+            assert setting in {f.name for f in fields(PolicySettings)}
 
 
 def test_every_label_has_a_record() -> None:
