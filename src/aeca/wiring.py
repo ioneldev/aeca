@@ -15,10 +15,14 @@ from aeca.adapters.sqlite_state import SqliteState
 from aeca.adapters.tracer import JsonlTracer
 from aeca.application.budget import Budget
 from aeca.application.decide import DecideDeps, decide
-from aeca.application.process_email import InboxDeps, InboxProcessor
+from aeca.application.deferred_approval import DeferredApprovalOpener
+from aeca.application.executor import Executor, ExecutorDeps
+from aeca.application.process_email import InboxDeps, InboxProcessor, InboxSettings
 from aeca.application.service import Service, ServiceDeps
 from aeca.domain.errors import ConfigError
 from aeca.domain.facts import FactSettings
+from aeca.domain.planner import PlanSettings, WorkHours, parse_work_hours
+from aeca.domain.policy import PolicySettings
 from aeca.domain.secret import SecretStr
 from aeca.settings import Settings
 
@@ -41,30 +45,41 @@ def build(settings: Settings) -> Service:
     google = build_google_services(settings)
     budget = Budget(settings.max_usd_per_day)
     chosen_model = load_models().decision
+    # Read once at startup: every plan and every message states this zone.
+    zone = _zone_of(settings, google)
     decide_deps = DecideDeps(
         model=AnthropicClient.from_api_key(_anthropic_key(settings), tracer),
         model_name=chosen_model.model,
         effort=chosen_model.effort,
         clock=clock,
-        zone=_zone_of(settings, google),
+        zone=zone,
         tracer=tracer,
         budget=budget,
     )
     mailbox = google.mailbox
+    store = SqliteState(data_dir / STATE_FILE_NAME)
+    executor = Executor(
+        ExecutorDeps(
+            mailbox=mailbox,
+            calendar=google.calendar,
+            store=store,
+            tracer=tracer,
+            manager_address=settings.manager_address or settings.gmail_address,
+        )
+    )
     processor = InboxProcessor(
         InboxDeps(
             mailbox=mailbox,
-            store=SqliteState(data_dir / STATE_FILE_NAME),
+            calendar=google.calendar,
+            store=store,
             audit=JsonlAuditLog(data_dir / AUDIT_FILE_NAME, secrets=secrets, rotation=LOG_ROTATION),
             tracer=tracer,
-            decide=lambda facts: decide(facts, decide_deps),
-            facts=FactSettings(
-                account_address=settings.gmail_address,
-                internal_senders=settings.internal_senders,
-                bulk_senders=settings.bulk_senders,
-            ),
             clock=clock,
             budget=budget,
+            decide=lambda facts: decide(facts, decide_deps),
+            executor=executor,
+            approvals=DeferredApprovalOpener(store, tracer),
+            settings=_inbox_settings(settings, zone),
         )
     )
     return Service(
@@ -75,6 +90,34 @@ def build(settings: Settings) -> Service:
             poll_seconds=settings.poll_seconds,
         )
     )
+
+
+def _inbox_settings(settings: Settings, zone: ZoneInfo) -> InboxSettings:
+    return InboxSettings(
+        facts=FactSettings(
+            account_address=settings.gmail_address,
+            internal_senders=settings.internal_senders,
+            bulk_senders=settings.bulk_senders,
+        ),
+        plan=PlanSettings(
+            zone=zone,
+            work_hours=_work_hours_of(settings),
+            meeting_minutes=settings.meeting_minutes,
+            buffer_minutes=settings.buffer_minutes,
+            alternative_days=settings.alternative_days,
+        ),
+        policy=PolicySettings(sales_decline_needs_approval=settings.sales_decline_needs_approval),
+    )
+
+
+def _work_hours_of(settings: Settings) -> WorkHours:
+    try:
+        return parse_work_hours(settings.work_hours)
+    except ValueError as error:
+        raise ConfigError(
+            f"WORK_HOURS is not valid: {error}.",
+            next_action="Set WORK_HOURS like Mon-Fri 09:00-17:00, then run again.",
+        ) from error
 
 
 def _secrets_of(settings: Settings) -> tuple[SecretStr, ...]:

@@ -88,6 +88,7 @@ class _FieldValidation:
             decided_by=DecidedBy.MODEL,
             rules_fired=(),
             dropped=tuple(self.dropped),
+            urgent_quote=self._urgent_quote() if urgent else None,
         )
 
     def _urgent(self) -> bool:
@@ -100,6 +101,9 @@ class _FieldValidation:
             self.dropped.append("urgent: its quote is not in the email")
             return False
         return True
+
+    def _urgent_quote(self) -> str:
+        return bounded(visible((self.submitted.urgent_quote or "").strip()), QUOTE_LIMIT)
 
     def _reply(self) -> ReplyKind:
         reply = self.submitted.reply

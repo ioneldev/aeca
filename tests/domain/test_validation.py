@@ -98,6 +98,20 @@ def test_urgent_with_an_empty_quote_is_dropped(quote: str | None) -> None:
     assert not result.urgent and "urgent" in result.dropped[0]
 
 
+def test_a_kept_urgency_keeps_its_quote_for_the_manager() -> None:
+    ctx = context(text="Our server is down since 9.")
+
+    result = validated(decision(urgent=True, urgent_quote="  server is down "), ctx)
+
+    assert result.urgent_quote == "server is down"
+
+
+def test_a_dropped_urgency_keeps_no_quote() -> None:
+    result = validated(decision(urgent=True, urgent_quote="made up"), context())
+
+    assert result.urgent_quote is None
+
+
 def test_an_urgent_quote_may_come_from_the_subject() -> None:
     ctx = context(subject="Outage in production", text="Please look.")
 

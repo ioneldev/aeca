@@ -1,79 +1,98 @@
 """The real processor inside the real service, with fakes only at the edges."""
 
-from decimal import Decimal
+from pathlib import Path
 
-from fakes.fake_mailbox import FakeMailbox
-from fakes.fixed_clock import FixedClock
-from fakes.memory_audit import MemoryAudit
-from fakes.memory_state import MemoryState
+import pytest
+from fakes.crash import Killed
 from fakes.recording_console import RecordingConsole
-from fakes.recording_tracer import RecordingTracer
-from support.emails import make_raw
+from support.decisions import decision_of
+from support.inbox_rig import InboxRig
 
-from aeca.application.budget import Budget
-from aeca.application.process_email import MAX_TRIES, InboxDeps, InboxProcessor
+from aeca.application.process_email import MAX_TRIES
 from aeca.application.service import Service, ServiceDeps
-from aeca.domain.decision import Decision
+from aeca.domain.approval import Approval, ApprovalState
 from aeca.domain.errors import EmailError
-from aeca.domain.facts import EmailFacts, FactSettings
-from aeca.domain.labels import ERROR, PROCESSED, Label, ReplyKind
+from aeca.domain.labels import ERROR, PROCESSED, Label
 
 POISON_SUBJECT = "poison"
+MANAGER = "boss@example.com"
 
 
-def decide_by_subject(facts: EmailFacts) -> Decision:
-    if facts.subject == POISON_SUBJECT:
-        raise EmailError("cannot read this", next_action="none")
-    return Decision(
-        label=Label.TASK,
-        urgent=False,
-        finance=False,
-        meeting=None,
-        reply=ReplyKind.NONE,
-        urgent_draft=None,
-        summary="s",
-        suspected_injection=None,
-        decided_by=Decision.fallback("x").decided_by,
-        rules_fired=(),
-        dropped=(),
-    )
-
-
-def build() -> tuple[Service, FakeMailbox, MemoryAudit, RecordingConsole]:
-    mailbox = FakeMailbox()
-    audit = MemoryAudit()
+def service_of(rig: InboxRig) -> tuple[Service, RecordingConsole]:
     console = RecordingConsole()
-    processor = InboxProcessor(
-        InboxDeps(
-            mailbox=mailbox,
-            store=MemoryState(),
-            audit=audit,
-            tracer=RecordingTracer(),
-            decide=decide_by_subject,
-            facts=FactSettings(
-                account_address="aeca@gmail.com",
-                internal_senders=frozenset(),
-                bulk_senders=frozenset(),
-            ),
-            clock=FixedClock(),
-            budget=Budget(Decimal(5)),
+    service = Service(
+        ServiceDeps(
+            processor=rig.processor, mailbox=rig.mailbox, console=console, poll_seconds=0.01
         )
     )
-    service = Service(
-        ServiceDeps(processor=processor, mailbox=mailbox, console=console, poll_seconds=0.01)
-    )
-    return service, mailbox, audit, console
+    return service, console
 
 
-def test_a_failing_email_is_retried_each_tick_while_the_good_one_after_it_is_done_once() -> None:
-    service, mailbox, audit, console = build()
-    mailbox.add(make_raw(message_id="bad", subject=POISON_SUBJECT))
-    mailbox.add(make_raw(message_id="good", subject="fine"))
+def test_a_failing_email_is_retried_each_tick_while_the_good_one_after_it_is_done_once(
+    tmp_path: Path,
+) -> None:
+    rig = InboxRig(tmp_path)
+    rig.decisions_by_subject["fine"] = decision_of(Label.TASK)
+    rig.next_decision = EmailError("cannot read this", next_action="none")
+    rig.receive(message_id="bad", subject=POISON_SUBJECT)
+    rig.receive(message_id="good", thread_id="thread-2", subject="fine")
+    service, console = service_of(rig)
 
     results = [service.tick() for _ in range(MAX_TRIES + 1)]
 
     assert [(r.processed, r.failed) for r in results] == [(1, 1), (0, 1), (0, 1), (0, 0)]
-    assert mailbox.added_labels("bad") == [ERROR, ERROR, ERROR, PROCESSED]
-    assert mailbox.added_labels("good") == ["TASK", PROCESSED]
-    assert [line.outcome for line in audit.lines].count("failed") == MAX_TRIES
+    assert rig.mailbox.added_labels("bad") == [ERROR, ERROR, ERROR, PROCESSED]
+    assert rig.mailbox.added_labels("good") == ["TASK", PROCESSED]
+    assert [line.outcome for line in rig.audit.lines].count("failed") == MAX_TRIES
     assert len(console.emails) == MAX_TRIES + 1
+
+
+def test_sixty_manager_answers_waiting_in_approval_threads_do_not_stop_a_new_email(
+    tmp_path: Path,
+) -> None:
+    rig = InboxRig(tmp_path)
+    for number in range(60):
+        rig.store.approval_save(waiting_approval(number))
+        rig.receive(message_id=f"answer-{number}", thread_id=f"request-{number}", sender=MANAGER)
+    rig.receive(message_id="new", thread_id="new-thread", subject="Please review")
+    service, _ = service_of(rig)
+
+    result = service.tick()
+
+    assert result.processed == 1
+    assert PROCESSED in rig.mailbox.labels_of("new")
+    assert [facts.message_id for facts in rig.decided] == ["new"]
+    assert all(PROCESSED not in rig.mailbox.labels_of(f"answer-{n}") for n in range(60))
+
+
+def test_unfinished_work_of_an_archived_email_is_finished_by_the_next_tick(
+    tmp_path: Path,
+) -> None:
+    rig = InboxRig(tmp_path)
+    rig.next_decision = decision_of(Label.MARKETING)
+    rig.receive(message_id="newsletter", sender="news@shop.example")
+    rig.mailbox.kill_after_entry = "modify:-INBOX"
+    with pytest.raises(Killed):
+        service_of(rig)[0].tick()
+    rig.restart()
+    service, console = service_of(rig)
+
+    result = service.tick()
+
+    assert result.processed == 1
+    assert [line.message_id for line in console.emails] == ["newsletter"]
+    assert PROCESSED in rig.mailbox.labels_of("newsletter")
+
+
+def waiting_approval(number: int) -> Approval:
+    return Approval(
+        id=f"a-{number}",
+        source_message_id=f"source-{number}",
+        source_thread_id=f"source-thread-{number}",
+        attempt=0,
+        actions=(),
+        state=ApprovalState.AWAITING,
+        request_thread_id=f"request-{number}",
+        summary="s",
+        holds=(),
+    )

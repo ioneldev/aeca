@@ -2,22 +2,31 @@
 makes the whole service back off instead of failing any email."""
 
 import threading
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from aeca.application.failures import ends_the_tick
 from aeca.application.ports import Mailbox
-from aeca.application.process_email import ends_the_tick
 from aeca.domain.audit import AuditLine, Outcome
 from aeca.domain.errors import AecaError, EmailError
 from aeca.domain.labels import ALL_USER_LABELS
 
 BACKOFF_SECONDS = (30, 60, 120, 300)
+# Emails handled per tick. A skipped one costs no model call and does not count.
 INBOX_MESSAGES_PER_TICK = 50
+# Ids read per tick: enough that answers waiting for the approval loop, skipped on every tick,
+# never crowd a new email out of the listing.
+INBOX_IDS_READ_PER_TICK = 500
 
 
 class EmailProcessor(Protocol):
     def process(self, message_id: str) -> AuditLine | None: ...
+
+    def unfinished(self) -> list[str]:
+        """Emails to resume by id, which the inbox listing may no longer return."""
+        ...
 
 
 class Console(Protocol):
@@ -68,8 +77,8 @@ class Service:
     def tick(self) -> TickResult:
         results: list[_Result] = []
         try:
-            for message_id in self._deps.mailbox.unprocessed_inbox(INBOX_MESSAGES_PER_TICK):
-                if self._stop.is_set():
+            for message_id in self._emails_to_handle():
+                if self._stop.is_set() or _handled(results) == INBOX_MESSAGES_PER_TICK:
                     break
                 results.append(self._process(message_id))
         except Exception as error:
@@ -79,6 +88,13 @@ class Service:
             return self._backing_off(results, error)
         self._outages_in_a_row = 0
         return _tick_result(results, backoff_s=0)
+
+    def _emails_to_handle(self) -> Iterator[str]:
+        resumed = self._deps.processor.unfinished()
+        yield from resumed
+        for message_id in self._deps.mailbox.unprocessed_inbox(INBOX_IDS_READ_PER_TICK):
+            if message_id not in resumed:
+                yield message_id
 
     def _backing_off(self, results: list[_Result], error: AecaError) -> TickResult:
         return _tick_result(results, backoff_s=self._back_off(error))
@@ -101,6 +117,10 @@ class Service:
             "backoff", seconds=seconds, reason=str(error), next_action=error.next_action
         )
         return seconds
+
+
+def _handled(results: list[_Result]) -> int:
+    return len(results) - results.count(_Result.SKIPPED)
 
 
 def _tick_result(results: list[_Result], *, backoff_s: int) -> TickResult:

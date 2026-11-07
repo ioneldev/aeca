@@ -14,6 +14,7 @@ from aeca.domain.planner import (
     PlanSettings,
     SlotRequest,
     WorkHours,
+    alternatives_search_span,
     busy_intervals,
     choose_slot,
     find_alternatives,
@@ -655,3 +656,19 @@ def test_a_utc_now_just_before_local_midnight_still_means_the_local_day() -> Non
     found = find_alternatives(alternatives_request(sunday_23_30_utc_is_monday_01_30_local))
 
     assert found[0].start == on_monday(9)
+
+
+def test_the_alternatives_search_spans_from_now_to_the_last_searched_days_closing() -> None:
+    now = on_monday(8)
+
+    span = alternatives_search_span(now, make_settings())
+
+    assert span == interval(now, at_day(4, 17))
+
+
+def test_the_alternatives_search_skips_a_day_with_no_working_time_left() -> None:
+    friday_evening = at_day(4, 18)
+
+    span = alternatives_search_span(friday_evening, make_settings(alternative_days=2))
+
+    assert span == interval(friday_evening, at_day(8, 17))

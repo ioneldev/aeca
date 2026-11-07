@@ -66,6 +66,8 @@ class Decision:
     decided_by: DecidedBy
     rules_fired: tuple[str, ...]
     dropped: tuple[str, ...]
+    # The text that shows the email is urgent, kept for the manager's notice.
+    urgent_quote: str | None = None
 
     @staticmethod
     def fallback(summary: str) -> "Decision":

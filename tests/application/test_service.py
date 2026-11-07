@@ -27,6 +27,10 @@ class ScriptedProcessor:
     def __init__(self) -> None:
         self.script: dict[str, AuditLine | Exception | None] = {}
         self.seen: list[str] = []
+        self.unfinished_ids: list[str] = []
+
+    def unfinished(self) -> list[str]:
+        return list(self.unfinished_ids)
 
     def process(self, message_id: str) -> AuditLine | None:
         self.seen.append(message_id)
@@ -90,10 +94,35 @@ def test_a_tick_processes_every_listed_email_and_prints_each_line(rig: Rig) -> N
     assert [line.message_id for line in rig.console.emails] == ["a", "b"]
 
 
-def test_a_tick_reads_at_most_fifty_messages(rig: Rig) -> None:
+def test_a_tick_handles_at_most_fifty_emails(rig: Rig) -> None:
+    rig.inbox(*(f"m{number}" for number in range(60)))
+
+    result = rig.service.tick()
+
+    assert INBOX_MESSAGES_PER_TICK == 50
+    assert result.processed == 50
+    assert rig.processor.seen == [f"m{number}" for number in range(50)]
+
+
+def test_skipped_emails_do_not_count_toward_the_fifty(rig: Rig) -> None:
+    skipped = [f"answer{number}" for number in range(60)]
+    rig.inbox(*skipped, "new")
+    for message_id in skipped:
+        rig.processor.script[message_id] = None
+
+    result = rig.service.tick()
+
+    assert result.processed == 1
+    assert rig.processor.seen[-1] == "new"
+
+
+def test_unfinished_work_comes_first_and_is_not_processed_twice(rig: Rig) -> None:
+    rig.inbox("listed", "archived-but-unfinished")
+    rig.processor.unfinished_ids = ["archived-but-unfinished"]
+
     rig.service.tick()
 
-    assert rig.mailbox.listing_calls == [INBOX_MESSAGES_PER_TICK] == [50]
+    assert rig.processor.seen == ["archived-but-unfinished", "listed"]
 
 
 def test_a_skipped_email_is_neither_processed_nor_failed(rig: Rig) -> None:

@@ -1,6 +1,6 @@
-"""The words AECA sends to a sender. Code writes all of them, except the urgent draft, which the
-manager reads first. No line starts with APPROVE or REJECT, so a quoted line can never pass for
-an answer to an approval request."""
+"""The words AECA sends to a sender, and the urgent notice it sends the manager. Code writes all
+of them, except the urgent draft, which the manager reads first. No line starts with APPROVE or
+REJECT, so a quoted line can never pass for an answer to an approval request."""
 
 import re
 from collections.abc import Sequence
@@ -16,6 +16,8 @@ SIGN_OFF = "Kind regards,\nAECA, the assistant of this mailbox"
 WHITESPACE_RUN = re.compile(r"\s+")
 REPLY_PREFIX = re.compile(r"re:", re.IGNORECASE)
 ANSWER_WORD_AT_LINE_START = re.compile(r"^(\s*)(?=(?:APPROVE|REJECT))", re.IGNORECASE)
+URGENT_NOTICE_KIND = "urgent-notice"
+NOTICE_SUBJECT_PREFIX = "[AECA] Urgent: "
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,8 +26,17 @@ class ReplyRequest:
     aeca_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class UrgentNotice:
+    facts: EmailFacts
+    aeca_id: str
+    manager_address: str
+    summary: str
+    quote: str
+
+
 def reply_subject(subject: str) -> str:
-    one_line = WHITESPACE_RUN.sub(" ", subject).strip()
+    one_line = _one_line(subject)
     return one_line if REPLY_PREFIX.match(one_line) else f"Re: {one_line}"
 
 
@@ -91,6 +102,40 @@ def urgent_reply(request: ReplyRequest, *, draft: str) -> OutgoingMessage:
     return _reply(request, kind="urgent_reply", paragraphs=(draft.strip(),))
 
 
+def urgent_notice(notice: UrgentNotice) -> OutgoingMessage:
+    """Tells the manager about an urgent email that has no draft to approve, in a thread of its
+    own: it answers nobody, so it carries no In-Reply-To."""
+    facts = notice.facts
+    subject = _one_line(facts.subject)
+    details = "\n".join(
+        (
+            f"From: {_sender_line(facts)}",
+            f"Subject: {subject}",
+            f"Summary: {_one_line(notice.summary)}",
+            f'Why it is urgent: "{_one_line(notice.quote)}"',
+        )
+    )
+    body = "\n\n".join(
+        (
+            "Hello,",
+            "This email looks urgent and needs your attention soon:",
+            details,
+            "It is starred and labelled URGENT. No reply has been drafted to the sender.",
+            SIGN_OFF,
+        )
+    )
+    return OutgoingMessage(
+        to=notice.manager_address,
+        subject=f"{NOTICE_SUBJECT_PREFIX}{subject}",
+        body=_without_answer_words_at_line_start(body),
+        kind=URGENT_NOTICE_KIND,
+        aeca_id=notice.aeca_id,
+        thread_id=None,
+        in_reply_to=None,
+        references=None,
+    )
+
+
 def describe_slot(slot: Interval, zone: ZoneInfo) -> str:
     start, end = slot.start.astimezone(zone), slot.end.astimezone(zone)
     day = f"{start:%A} {start.day} {start:%B %Y}"
@@ -112,8 +157,17 @@ def _reply(request: ReplyRequest, *, kind: str, paragraphs: Sequence[str]) -> Ou
     )
 
 
+def _sender_line(facts: EmailFacts) -> str:
+    name = _one_line(facts.sender_name)
+    return f"{name} <{facts.sender}>" if name else facts.sender
+
+
+def _one_line(text: str) -> str:
+    return WHITESPACE_RUN.sub(" ", text).strip()
+
+
 def _greeting(facts: EmailFacts) -> str:
-    name = WHITESPACE_RUN.sub(" ", facts.sender_name).strip()
+    name = _one_line(facts.sender_name)
     return f"Hello {name}," if name else "Hello,"
 
 

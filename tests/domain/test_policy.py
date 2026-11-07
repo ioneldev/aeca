@@ -1,4 +1,4 @@
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -263,6 +263,15 @@ def test_urgent_internal_without_a_draft_is_notified_without_approval() -> None:
         ("apply_label", "TASK"), ("star", ""), ("apply_label", "URGENT"), ("notify_manager", ""),
     ]  # fmt: skip
     assert result.for_approval == ()
+
+
+def test_the_urgent_notice_carries_the_summary_and_the_quote_for_the_manager() -> None:
+    chosen = replace(decision(Label.TASK, urgent=True), urgent_quote="due today")
+
+    result = plan(chosen, facts=INTERNAL)
+
+    notice = next(a for a in result.automatic if a.verb is Verb.NOTIFY_MANAGER)
+    assert dict(notice.args) == {"summary": "s", "quote": "due today"}
 
 
 def test_urgent_external_is_starred_and_labelled_only() -> None:

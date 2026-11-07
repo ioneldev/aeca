@@ -242,7 +242,13 @@ class _Planner:
             return self._reply_args()
         if step.verb is Verb.CREATE_EVENT:
             return self._event_args()
+        if step.verb is Verb.NOTIFY_MANAGER:
+            return self._notice_args()
         return {}
+
+    def _notice_args(self) -> dict[str, str]:
+        decision = self.context.decision
+        return {"summary": decision.summary, "quote": decision.urgent_quote or ""}
 
     def _reply_args(self) -> dict[str, str]:
         decision = self.context.decision

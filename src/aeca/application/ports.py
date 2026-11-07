@@ -8,13 +8,16 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
+from aeca.domain.actions import Action
 from aeca.domain.calendar_event import CalendarEvent, NewEvent
 from aeca.domain.email import RawEmail
 from aeca.domain.errors import AecaError
+from aeca.domain.facts import EmailFacts
 from aeca.domain.outgoing import OutgoingMessage, SentMessage
 from aeca.domain.time_range import Interval
 
 DEFAULT_MAX_TOKENS = 16000
+FIRST_ATTEMPT = 0
 
 
 class Clock(Protocol):
@@ -166,4 +169,23 @@ class Calendar(Protocol):
 
     def insert_event(self, event: NewEvent) -> None:
         """Creates an event with no attendees, so Google sends no invitation."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class OpenApproval:
+    source: EmailFacts
+    actions: tuple[Action, ...]
+    holds: tuple[Interval, ...]
+    summary: str
+    # The policy keys gated actions by attempt; an email from the inbox is always on its first.
+    attempt: int = FIRST_ATTEMPT
+
+
+class ApprovalOpener(Protocol):
+    def open(self, request: OpenApproval) -> str:
+        """Asks the manager to approve the actions, and returns the approval's id.
+
+        A resume calls it again for the same email after a crash, so for the same source and
+        attempt it returns the approval already opened, whatever its state, and opens no other."""
         ...

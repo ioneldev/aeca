@@ -1,4 +1,5 @@
 import re
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -9,12 +10,14 @@ from aeca.domain.facts import EmailFacts
 from aeca.domain.outgoing import OutgoingMessage
 from aeca.domain.templates import (
     ReplyRequest,
+    UrgentNotice,
     acknowledgement,
     alternatives,
     confirmation,
     decline,
     reply_subject,
     thank_you,
+    urgent_notice,
     urgent_reply,
 )
 from aeca.domain.time_range import Interval
@@ -43,11 +46,56 @@ def every_template(facts: EmailFacts) -> list[OutgoingMessage]:
     ]
 
 
+def manager_notice(
+    facts: EmailFacts, *, summary: str = "Needs the Q3 numbers.", quote: str = "due today"
+) -> OutgoingMessage:
+    return urgent_notice(
+        UrgentNotice(
+            facts=facts,
+            aeca_id="k-9",
+            manager_address="boss@example.com",
+            summary=summary,
+            quote=quote,
+        )
+    )
+
+
 def test_no_template_line_starts_with_approve_or_reject() -> None:
     facts = make_facts(subject="APPROVE the wire", sender_name="REJECT", text="x")
+    notice = manager_notice(facts, summary="APPROVE it", quote="fine\nREJECT this\u2028Approve")
 
-    for message in every_template(facts):
+    for message in [*every_template(facts), notice]:
         assert not FORBIDDEN_LINE_START.search(message.body), message.kind
+        for line in message.body.splitlines():
+            assert not FORBIDDEN_LINE_START.match(line), message.kind
+
+
+def test_the_urgent_notice_goes_to_the_manager_in_a_new_thread() -> None:
+    notice = manager_notice(make_facts(thread_id="thread-9", rfc822_message_id="<m2@x.example>"))
+
+    assert (notice.to, notice.thread_id, notice.in_reply_to, notice.references) == (
+        "boss@example.com", None, None, None,
+    )  # fmt: skip
+    assert (notice.kind, notice.aeca_id) == ("urgent-notice", "k-9")
+
+
+def test_the_urgent_notice_names_the_sender_the_subject_the_summary_and_the_quote() -> None:
+    facts = make_facts(
+        sender="jurgen@company.example", sender_name="Jürgen Müller", subject="Änderung"
+    )
+
+    notice = manager_notice(facts, summary="The contract changes today.", quote="sign by 17:00")
+
+    for text in ("Jürgen Müller", "jurgen@company.example", "Änderung",
+                 "The contract changes today.", "sign by 17:00"):  # fmt: skip
+        assert text in notice.body
+    assert notice.subject == "[AECA] Urgent: Änderung"
+
+
+def test_the_urgent_notice_subject_is_one_line() -> None:
+    notice = manager_notice(replace(make_facts(), subject="Line one\r\nBcc: x@evil.example"))
+
+    assert notice.subject == "[AECA] Urgent: Line one Bcc: x@evil.example"
 
 
 def test_a_model_line_that_starts_with_approve_is_prefixed_not_dropped() -> None:

@@ -12,7 +12,7 @@ from aeca.domain.actions import Action, ActionRecord, ActionStatus, Verb
 from aeca.domain.approval import Approval, ApprovalState, Hold
 from aeca.domain.errors import AecaError
 from aeca.domain.journal import JournalEntry
-from aeca.domain.time_range import Interval
+from aeca.domain.time_range import Interval, in_utc
 
 SCHEMA_VERSION = 1
 
@@ -292,7 +292,7 @@ class SqliteState:
     def holds_active(self, now: datetime) -> list[Hold]:
         rows = self._connection.execute("SELECT * FROM holds ORDER BY rowid").fetchall()
         holds = [_hold_from(row) for row in rows]
-        return [hold for hold in holds if hold.interval.start > now]
+        return [hold for hold in holds if in_utc(hold.interval.start) > in_utc(now)]
 
     def holds_add(self, holds: list[Hold]) -> None:
         with self._transaction() as connection:

@@ -103,13 +103,20 @@ def choose_slot(request: SlotRequest) -> SlotFree | None:
 
 def find_alternatives(request: AlternativesRequest) -> tuple[Interval, ...]:
     found: list[Interval] = []
-    for day in _days_to_search(request):
+    for day in _days_to_search(request.now, request.settings):
         slot = _earliest_free_slot_on(day, request)
         if slot is not None:
             found.append(slot)
         if len(found) == MAX_ALTERNATIVES:
             break
     return tuple(found)
+
+
+def alternatives_search_span(now: datetime, settings: PlanSettings) -> Interval:
+    """From now to the closing time of the last working day find_alternatives looks at."""
+    last_day = max(_days_to_search(now, settings))
+    _, closing = _work_day_boundaries(last_day, settings)
+    return Interval(start=now, end=closing)
 
 
 def _parse_days(text: str) -> frozenset[int]:
@@ -198,25 +205,23 @@ def _work_day_boundaries(day: date, settings: PlanSettings) -> tuple[datetime, d
     return opening, closing
 
 
-def _days_to_search(request: AlternativesRequest) -> Iterator[date]:
-    settings = request.settings
-    today = request.now.astimezone(settings.zone).date()
+def _days_to_search(now: datetime, settings: PlanSettings) -> Iterator[date]:
+    today = now.astimezone(settings.zone).date()
     offered = 0
     for offset in range(settings.alternative_days * DAYS_IN_A_WEEK + 1):
         day = today + timedelta(days=offset)
-        if _has_working_time_left(day, request):
+        if _has_working_time_left(day, now, settings):
             yield day
             offered += 1
             if offered == settings.alternative_days:
                 return
 
 
-def _has_working_time_left(day: date, request: AlternativesRequest) -> bool:
-    settings = request.settings
+def _has_working_time_left(day: date, now: datetime, settings: PlanSettings) -> bool:
     if day.weekday() not in settings.work_hours.days:
         return False
     _, closing = _work_day_boundaries(day, settings)
-    return in_utc(request.now) < in_utc(closing)
+    return in_utc(now) < in_utc(closing)
 
 
 def _earliest_free_slot_on(day: date, request: AlternativesRequest) -> Interval | None:

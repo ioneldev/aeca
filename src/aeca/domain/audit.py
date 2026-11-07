@@ -8,6 +8,7 @@ ActionSummary = tuple[str, str, str]
 
 class Outcome(StrEnum):
     DONE = "done"
+    AWAITING_APPROVAL = "awaiting_approval"
     FAILED = "failed"
 
 
