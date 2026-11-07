@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from fakes.google_stub import GoogleStub, http_error
 
-from aeca.adapters.gmail import INBOX_QUERY, GmailMailbox
+from aeca.adapters.gmail import INBOX_QUERY, MAX_INBOX_IDS_PER_TICK, GmailMailbox
 from aeca.domain.errors import EmailError, SystemWideError
 from aeca.domain.outgoing import OutgoingMessage
 
@@ -331,3 +331,80 @@ def test_address_reads_the_profile() -> None:
 
     assert mailbox.address() == "real@gmail.com"
     assert stub.calls_to("users.getProfile") == [{"userId": "me"}]
+
+
+@pytest.mark.parametrize("field", ["to", "subject", "in_reply_to", "references", "kind", "aeca_id"])
+def test_a_line_break_in_any_header_value_cannot_inject_a_header(field: str) -> None:
+    hostile = "<r@b.c>\r\nBcc: x@evil.example"
+
+    parsed, _ = create_draft_for(a_reply(**{field: hostile}))
+
+    assert parsed["Bcc"] is None
+    assert len(parsed.get_all("Bcc", [])) == 0
+
+
+def test_a_crafted_references_header_survives_facts_and_templates() -> None:
+    from support.emails import make_raw
+    from support.facts import ACCOUNT_ADDRESS
+
+    from aeca.domain.facts import FactSettings, extract_facts
+    from aeca.domain.templates import ReplyRequest, decline
+
+    crafted = "=?utf-8?q?<r@b.c>=0D=0ABcc:_x@evil.example?="
+    raw = make_raw(headers={"References": crafted, "Message-ID": "<m@b.c>"})
+    settings = FactSettings(ACCOUNT_ADDRESS, frozenset(), frozenset())
+    facts = extract_facts(raw, settings)
+    outgoing = decline(ReplyRequest(facts=facts, aeca_id="a1"))
+
+    parsed, _ = create_draft_for(outgoing)
+
+    assert parsed["Bcc"] is None
+
+
+def test_an_unbuildable_message_is_an_email_error_not_a_value_error() -> None:
+    mailbox, _ = mailbox_with()
+
+    with pytest.raises(EmailError):
+        mailbox.create_draft(a_reply(to="not an address <<<"))
+
+
+def test_a_label_differing_only_in_case_is_found_after_a_conflict() -> None:
+    mailbox, stub = mailbox_with()
+    stub.reply("users.labels.list", {"labels": []}, {"labels": [{"id": "L7", "name": "Urgent"}]})
+    stub.reply("users.labels.create", http_error(409))
+    stub.reply("users.messages.modify", {"id": "m1"})
+
+    mailbox.modify("m1", add=["URGENT"], remove=[])
+
+    assert stub.calls_to("users.messages.modify")[0]["body"]["addLabelIds"] == ["L7"]
+
+
+def test_a_conflict_with_no_matching_label_is_an_email_error() -> None:
+    mailbox, stub = mailbox_with()
+    stub.reply("users.labels.list", {"labels": []})
+    stub.reply("users.labels.create", http_error(409))
+
+    with pytest.raises(EmailError):
+        mailbox.modify("m1", add=["URGENT"], remove=[])
+
+
+def test_the_inbox_listing_stops_at_the_cap_and_keeps_the_oldest_read() -> None:
+    mailbox, stub = mailbox_with()
+    counter = iter(range(10**6))
+
+    def endless_page(_arguments: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "messages": [{"id": f"m{next(counter)}"} for _ in range(500)],
+            "nextPageToken": "more",
+        }
+
+    stub.reply("users.messages.list", endless_page)
+
+    ids = mailbox.unprocessed_inbox(limit=3)
+
+    assert len(stub.calls_to("users.messages.list")) == MAX_INBOX_IDS_PER_TICK // 500
+    assert ids == [
+        f"m{MAX_INBOX_IDS_PER_TICK - 1}",
+        f"m{MAX_INBOX_IDS_PER_TICK - 2}",
+        f"m{MAX_INBOX_IDS_PER_TICK - 3}",
+    ]

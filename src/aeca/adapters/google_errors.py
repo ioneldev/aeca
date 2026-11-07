@@ -1,7 +1,7 @@
 """Turns whatever the Google client raises into AECA's error kinds."""
 
+import http.client
 import json
-import socket
 import ssl
 from typing import Any
 
@@ -12,16 +12,24 @@ from googleapiclient.errors import HttpError
 from aeca.domain.errors import AecaError, CredentialsRevoked, EmailError, SystemWideError
 
 RATE_LIMIT_REASONS = frozenset(
-    {"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "backendError"}
+    {
+        "rateLimitExceeded",
+        "userRateLimitExceeded",
+        "quotaExceeded",
+        "backendError",
+        "dailyLimitExceeded",
+    }
 )
-CONNECTION_ERRORS = (
-    ConnectionError,
-    TimeoutError,
-    socket.gaierror,
-    socket.herror,
-    httplib2.HttpLib2Error,
-    TransportError,
-)
+MISSING_SCOPE_REASON = "insufficientPermissions"
+# Each of these 403s hits every call, so no email is to blame. The value is the fix to name.
+SETUP_BLOCKS = {
+    "accessNotConfigured": "Enable the Gmail and Calendar APIs in the Cloud project",
+    "domainPolicy": "Ask the domain admin to allow the Gmail and Calendar APIs, then run again",
+}
+CLIENT_REJECTED_MARKERS = ("invalid_client", "unauthorized_client")
+# Any OSError is a network failure here: ENETUNREACH, EHOSTUNREACH, resets and timeouts all reach
+# us raw, because httplib2 re-raises them. TLS errors are OSErrors too and are checked first.
+CONNECTION_ERRORS = (OSError, http.client.HTTPException, httplib2.HttpLib2Error, TransportError)
 UNAUTHORIZED = 401
 TOO_MANY_REQUESTS = 429
 FORBIDDEN = 403
@@ -80,10 +88,16 @@ def _tls_failure(error: Exception) -> SystemWideError:
 
 
 def _refresh_failure(error: RefreshError) -> SystemWideError:
-    if "invalid_grant" in str(error):
+    text = str(error)
+    if "invalid_grant" in text:
         return CredentialsRevoked(
             "Google refused the stored token: it was revoked or has expired.",
             next_action="Run make auth",
+        )
+    if any(marker in text for marker in CLIENT_REJECTED_MARKERS):
+        return CredentialsRevoked(
+            f"Google rejected the OAuth client: {text}",
+            next_action="Check GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, then run make auth",
         )
     return SystemWideError(
         f"Google would not refresh the access token: {error}",
@@ -93,12 +107,21 @@ def _refresh_failure(error: RefreshError) -> SystemWideError:
 
 def _http_failure(error: HttpError) -> AecaError:
     status = error.resp.status
+    reasons = _reasons_of(error)
     if status == UNAUTHORIZED:
         return CredentialsRevoked(
             "Google answered 401: the credentials are no longer valid.",
             next_action="Run make auth",
         )
-    if _is_overload(status, _reasons_of(error)):
+    if status == FORBIDDEN and MISSING_SCOPE_REASON in reasons:
+        return CredentialsRevoked(
+            "Google answered 403: a permission was not granted at consent.",
+            next_action="Run make auth and allow every requested permission",
+        )
+    if status == FORBIDDEN and reasons & SETUP_BLOCKS.keys():
+        fix = SETUP_BLOCKS[next(iter(reasons & SETUP_BLOCKS.keys()))]
+        return SystemWideError("Google answered 403: an API is not available.", next_action=fix)
+    if _is_overload(status, reasons):
         return SystemWideError(
             f"Google is limiting or failing requests (HTTP {status}).",
             next_action="Wait; AECA backs off and retries",

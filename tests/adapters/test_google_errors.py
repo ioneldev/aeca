@@ -1,3 +1,5 @@
+import errno
+import http.client
 import socket
 import ssl
 
@@ -97,3 +99,56 @@ def test_an_error_already_classified_passes_through() -> None:
     already = AecaError("x", next_action="y")
 
     assert classify(already) is already
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError(errno.ENETUNREACH, "Network is unreachable"),
+        OSError(errno.EHOSTUNREACH, "No route to host"),
+        http.client.IncompleteRead(b"par"),
+        http.client.RemoteDisconnected("closed"),
+    ],
+)
+def test_raw_network_failures_are_system_wide(error: Exception) -> None:
+    assert type(classify(error)) is SystemWideError
+
+
+def test_a_tls_failure_still_names_the_proxy_though_it_is_an_oserror() -> None:
+    assert "EXTRA_CA_CERTS" in classify(ssl.SSLCertVerificationError("x")).next_action
+
+
+def test_a_missing_scope_means_make_auth_with_every_permission() -> None:
+    classified = classify(http_error(403, "insufficientPermissions"))
+
+    assert isinstance(classified, CredentialsRevoked)
+    assert "make auth" in classified.next_action
+    assert "every requested permission" in classified.next_action
+
+
+def test_the_daily_limit_is_system_wide() -> None:
+    assert type(classify(http_error(403, "dailyLimitExceeded"))) is SystemWideError
+
+
+def test_a_disabled_api_names_the_cloud_project() -> None:
+    classified = classify(http_error(403, "accessNotConfigured"))
+
+    assert type(classified) is SystemWideError
+    assert "Cloud project" in classified.next_action
+
+
+def test_a_domain_policy_block_names_the_admin() -> None:
+    classified = classify(http_error(403, "domainPolicy"))
+
+    assert type(classified) is SystemWideError
+    assert "domain admin" in classified.next_action
+
+
+@pytest.mark.parametrize("reason", ["invalid_client", "unauthorized_client"])
+def test_a_rejected_client_names_the_client_settings(reason: str) -> None:
+    classified = classify(RefreshError(f"{reason}: Unauthorized"))
+
+    assert isinstance(classified, CredentialsRevoked)
+    assert "GOOGLE_CLIENT_ID" in classified.next_action
+    assert "GOOGLE_CLIENT_SECRET" in classified.next_action
+    assert "make auth" in classified.next_action

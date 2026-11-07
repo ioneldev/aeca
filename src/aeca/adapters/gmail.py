@@ -13,12 +13,16 @@ from googleapiclient.errors import HttpError
 from aeca.adapters.google_errors import classify, execute, execute_unless_missing
 from aeca.application.ports import MessageSummary
 from aeca.domain.email import RawEmail
+from aeca.domain.errors import EmailError
 from aeca.domain.outgoing import OutgoingMessage, SentMessage
 
 # Day-1 spike: confirm this finds exactly the unprocessed Inbox mail. Gmail search writes the "/"
 # in the label AECA/processed as "-".
 INBOX_QUERY = "in:inbox -label:AECA-processed"
 LIST_PAGE_SIZE = 500
+# A first run on a large inbox must not stall a tick on dozens of list calls. Oldest-first is kept
+# among the ids read; the newer ones are picked up on later ticks as the older ones get labelled.
+MAX_INBOX_IDS_PER_TICK = 2000
 SYSTEM_LABELS = frozenset({"INBOX", "SPAM", "STARRED", "UNREAD", "TRASH", "IMPORTANT", "SENT"})
 SUMMARY_HEADERS = ["From", "X-AECA-Kind", "X-AECA-Id"]
 LABEL_ALREADY_EXISTS = 409
@@ -31,16 +35,16 @@ class GmailMailbox:
         self._threads = service.users().threads()
         self._drafts = service.users().drafts()
         self._labels = service.users().labels()
-        self._profile = service.users()
+        self._users = service.users()
         self._account = account
         self._label_ids: dict[str, str] | None = None
 
     def address(self) -> str:
-        profile = execute(self._profile.getProfile(userId=USER))
+        profile = execute(self._users.getProfile(userId=USER))
         return str(profile["emailAddress"])
 
     def unprocessed_inbox(self, limit: int) -> list[str]:
-        newest_first = [entry["id"] for page in self._inbox_pages() for entry in page]
+        newest_first = [entry["id"] for entry in self._inbox_entries()]
         return newest_first[::-1][:limit]
 
     def get(self, message_id: str) -> RawEmail:
@@ -90,17 +94,19 @@ class GmailMailbox:
         reply = execute(self._drafts.send(userId=USER, body={"id": draft_id}))
         return SentMessage(message_id=str(reply["id"]), thread_id=str(reply["threadId"]))
 
-    def _inbox_pages(self) -> Any:
+    def _inbox_entries(self) -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
         page_token: str | None = None
-        while True:
+        while len(entries) < MAX_INBOX_IDS_PER_TICK:
             request = self._messages.list(
                 userId=USER, q=INBOX_QUERY, maxResults=LIST_PAGE_SIZE, **_page(page_token)
             )
             reply = execute(request)
-            yield reply.get("messages", [])
+            entries.extend(reply.get("messages", []))
             page_token = reply.get("nextPageToken")
             if not page_token:
-                return
+                break
+        return entries[:MAX_INBOX_IDS_PER_TICK]
 
     def _id_of(self, name: str) -> str:
         if name in SYSTEM_LABELS:
@@ -126,22 +132,45 @@ class GmailMailbox:
         except HttpError as error:
             if error.resp.status != LABEL_ALREADY_EXISTS:
                 raise classify(error) from error
-            # Another process made it after our list, so the cache is stale.
-            return self._read_labels()[name]
+            # Another process made it after our list, or Gmail matched it in another case.
+            return self._existing_label_id(name)
         except Exception as error:
             raise classify(error) from error
 
+    def _existing_label_id(self, name: str) -> str:
+        wanted = name.casefold()
+        for known_name, label_id in self._read_labels().items():
+            if known_name.casefold() == wanted:
+                return label_id
+        raise EmailError(
+            f"Gmail says the label {name} exists but does not list it.",
+            next_action="See the audit log",
+        )
+
     def _mime_of(self, message: OutgoingMessage) -> bytes:
+        try:
+            return self._build_mime(message).as_bytes()
+        except (ValueError, TypeError) as error:
+            raise EmailError(
+                f"The message could not be built: {error}", next_action="See the audit log"
+            ) from error
+
+    def _build_mime(self, message: OutgoingMessage) -> EmailMessage:
         mime = EmailMessage(policy=policy.SMTP)
         mime["From"] = self._account
-        mime["To"] = message.to
-        mime["Subject"] = " ".join(message.subject.split())
-        mime["X-AECA-Kind"] = message.kind
-        mime["X-AECA-Id"] = message.aeca_id
+        mime["To"] = _one_line(message.to)
+        mime["Subject"] = _one_line(message.subject)
+        mime["X-AECA-Kind"] = _one_line(message.kind)
+        mime["X-AECA-Id"] = _one_line(message.aeca_id)
         _add_threading_headers(mime, message)
         # Quoted-printable keeps every line 7-bit, which any relay accepts.
         mime.set_content(message.body, charset="utf-8", cte="quoted-printable")
-        return mime.as_bytes()
+        return mime
+
+
+def _one_line(value: str) -> str:
+    """Message-id lists are space-separated, so folding every break to a space loses nothing."""
+    return " ".join(value.split())
 
 
 def _add_threading_headers(mime: EmailMessage, message: OutgoingMessage) -> None:
@@ -149,8 +178,8 @@ def _add_threading_headers(mime: EmailMessage, message: OutgoingMessage) -> None
         mime["Auto-Submitted"] = "auto-generated"
         return
     mime["Auto-Submitted"] = "auto-replied"
-    mime["In-Reply-To"] = message.in_reply_to
-    mime["References"] = message.references or message.in_reply_to
+    mime["In-Reply-To"] = _one_line(message.in_reply_to)
+    mime["References"] = _one_line(message.references or message.in_reply_to)
 
 
 def _page(page_token: str | None) -> dict[str, str]:
