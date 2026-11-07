@@ -7,7 +7,7 @@ correctly labelled email into UNKNOWN.
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aeca.domain.decision import (
@@ -23,6 +23,7 @@ from aeca.domain.facts import EmailFacts
 from aeca.domain.labels import LABEL_RECORDS, Label, ReplyKind
 from aeca.domain.replies import check_urgent_draft
 from aeca.domain.text import bounded, visible
+from aeca.domain.time_range import in_utc
 
 SUMMARY_LIMIT = 200
 SUSPECTED_INJECTION_LIMIT = 500
@@ -30,6 +31,9 @@ TITLE_LIMIT = 200
 QUOTE_LIMIT = 500
 MIN_MEETING_MINUTES = 5
 MAX_MEETING_MINUTES = 480
+# A wider window is a vague request ("sometime next week"), not a proposed time. Dropping it sends
+# the meeting to the alternatives path instead of booking the first free slot in the stretch.
+MAX_WINDOW_WIDTH = timedelta(hours=12)
 
 WHITESPACE_RUN = re.compile(r"\s+")
 QUOTE_MARKS = str.maketrans(
@@ -177,6 +181,9 @@ class _FieldValidation:
         if end is not None and end <= start:
             self.dropped.append(f"{where}: end is not after start")
             return None
+        if end is not None and _is_too_wide(start, end):
+            self.dropped.append(f"{where}: too wide to be a proposed time")
+            return None
         return Window(start=start, end=end, quote=bounded(visible(submitted.quote), QUOTE_LIMIT))
 
     def _read_end(self, where: str, submitted: str | None) -> datetime | None:
@@ -193,6 +200,10 @@ class _FieldValidation:
         except ValueError:
             return None
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=self.context.zone)
+
+
+def _is_too_wide(start: datetime, end: datetime) -> bool:
+    return in_utc(end) - in_utc(start) > MAX_WINDOW_WIDTH
 
 
 def _quote_is_in_email(quote: str | None, facts: EmailFacts) -> bool:

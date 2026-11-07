@@ -49,6 +49,9 @@ one, and every time it proposes as a window with `start` and `end` in ISO 8601 w
 time written without a zone is in the zone named in the message. Resolve words such as "Tuesday"
 or "next week" against the current time in the message.
 
+A window needs a specific day and a time or part of a day: "Tuesday at 15:00", "Tuesday afternoon".
+A whole day, a week or "sometime" is not a window, so propose none.
+
 ## Evidence
 
 Every window and every urgency claim needs an exact quote from the email: the words that propose
