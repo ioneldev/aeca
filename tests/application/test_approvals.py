@@ -1241,3 +1241,60 @@ def test_a_top_posted_approve_with_a_disclaimer_below_the_quote_executes(rig: Ap
     rig.service.process_all()
 
     assert_executed_once(rig)
+
+
+# Fix round 3: a `From :` line as the last header of a multipart reply executed with a same-domain
+# pass, since Python moves it into the preamble without a defect.
+
+
+def reply_with_raw_text(rig: ApprovalRig, text: str) -> str:
+    rig.mailbox.add(
+        RawEmail(
+            message_id="raw-text",
+            thread_id=rig.request_thread(),
+            label_ids=frozenset({"INBOX"}),
+            rfc822=text.encode(),
+            internal_date=datetime(2026, 11, 7, 11, 0, tzinfo=BUCHAREST),
+        )
+    )
+    return "raw-text"
+
+
+def multipart_reply(from_lines: str, last_header: str) -> str:
+    return (
+        dmarc_pass_for("example.com")
+        + from_lines
+        + f"To: {ACCOUNT}\r\nSubject: Re: [AECA] Approve: meeting\r\n"
+        + 'MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary="b"\r\n'
+        + f"{last_header}\r\n\r\n"
+        + "--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nAPPROVE\r\n"
+        + "--b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<div>APPROVE</div>\r\n--b--\r\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "last_header",
+    ["From : attacker@example.com", "FROM : attacker@example.com", "From\t: attacker@example.com"],
+    ids=["from-space-colon", "uppercase", "tab"],
+)
+def test_a_second_from_as_the_last_header_of_a_multipart_reply_is_ignored(
+    rig: ApprovalRig, last_header: str
+) -> None:
+    opened(rig)
+    forged = reply_with_raw_text(rig, multipart_reply(f"From: {MANAGER}\r\n", last_header))
+
+    rig.tick()
+
+    assert_nothing_executed(rig)
+    assert only_line_about(rig, forged).rules == ("answer_ignored:sender_ambiguous",)
+
+
+def test_a_clean_multipart_proton_shaped_reply_still_counts(tmp_path: Path) -> None:
+    rig = opened(rig_with(tmp_path, manager_address=PROTON))
+    from_line = f"From: =?utf-8?Q?Ionel_C=C3=AEmpan?= <{PROTON}>\r\n"
+    reply = multipart_reply(from_line, "X-Pm-Origin: internal")
+    reply_with_raw_text(rig, DAY1_PROTON_RESULT + reply.split("\r\n", 1)[1])
+
+    rig.tick()
+
+    assert_executed_once(rig)

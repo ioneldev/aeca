@@ -1,3 +1,5 @@
+import time
+
 from aeca.domain.text import bounded, html_to_text, html_to_text_with_quotes, visible
 
 
@@ -91,3 +93,26 @@ def test_without_a_blockquote_it_reads_as_html_to_text():
     html = "<p>APPROVE</p><script>REJECT</script><div>Fine &amp; good</div>"
 
     assert html_to_text_with_quotes(html) == html_to_text(html)
+
+
+# Review minor: the reducer must stay linear. Two megabytes in 140,000 small pieces on one line take
+# a linear reducer about half a second, and the quadratic one it replaced about 3.5 s (measured).
+
+TWO_MEGABYTES_OF_SMALL_PIECES = ("<b>" + "w" * 20 + "</b> ") * 70_000
+LINEAR_BOUND_SECONDS = 1.5
+
+
+def test_a_large_html_body_reduces_in_linear_time():
+    started = time.perf_counter()
+    plain = html_to_text(TWO_MEGABYTES_OF_SMALL_PIECES)
+    elapsed = time.perf_counter() - started
+
+    assert len(TWO_MEGABYTES_OF_SMALL_PIECES) > 1_900_000
+    assert len(plain) == 21 * 70_000 - 1
+    assert elapsed < LINEAR_BOUND_SECONDS, f"{elapsed:.2f}s"
+
+
+def test_the_quoting_reducer_joins_its_lines_the_same_way():
+    html = "<blockquote>" + "<b>w</b> " * 3 + "</blockquote><p>end</p>"
+
+    assert html_to_text_with_quotes(html) == "> w w w\nend"

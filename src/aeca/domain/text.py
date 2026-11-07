@@ -100,14 +100,20 @@ class _TextReducer(HTMLParser):
             f"{QUOTE_PREFIX}{line}" if quoted else line for line, quoted in tidy_lines if line
         )
 
+    # Each line's pieces are joined once: adding them one by one copies the growing line every
+    # time, which a large HTML email from anyone turns into minutes of work.
     def _lines(self) -> list[tuple[str, bool]]:
-        lines: list[tuple[str, bool]] = [("", False)]
+        lines: list[tuple[str, bool]] = []
+        parts: list[str] = []
+        quoted_line = False
         for text, quoted in self._pieces:
             if text == LINE_BREAK:
-                lines.append(("", False))
+                lines.append(("".join(parts), quoted_line))
+                parts, quoted_line = [], False
             else:
-                line, line_quoted = lines[-1]
-                lines[-1] = (line + text, line_quoted or quoted)
+                parts.append(text)
+                quoted_line = quoted_line or quoted
+        lines.append(("".join(parts), quoted_line))
         return lines
 
 

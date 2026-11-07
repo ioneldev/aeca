@@ -632,3 +632,85 @@ def test_a_clean_proton_shaped_message_is_still_a_single_internal_sender():
         True,
         "protonmail.com",
     )
+
+
+# Fix round 3: exactly one From header line in the raw header block, wherever a second one sits.
+# As the last header line, `From :` raises no defect: Python moves it into the body or preamble.
+
+PLAIN_CONTENT = "Content-Type: text/plain; charset=utf-8\r\n"
+MULTIPART_CONTENT = 'MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary="b"\r\n'
+MULTIPART_PARTS = (
+    "--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nAPPROVE\r\n"
+    "--b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<div>APPROVE</div>\r\n--b--\r\n"
+)
+FIRST_HEADERS = COMPANY_PASS + "From: boss@company.com\r\nTo: aeca@gmail.com\r\nSubject: Re: x\r\n"
+
+
+def raw_from_text(text: str) -> RawEmail:
+    return RawEmail(
+        message_id="m1",
+        thread_id="t1",
+        label_ids=frozenset({"INBOX"}),
+        rfc822=text.encode(),
+        internal_date=datetime(2026, 11, 7, 9, 0, tzinfo=UTC),
+    )
+
+
+def with_a_last_header(last: str, *, multipart: bool) -> RawEmail:
+    """`last` is the header line right before the blank line that ends the headers."""
+    content, body = (
+        (MULTIPART_CONTENT, MULTIPART_PARTS) if multipart else (PLAIN_CONTENT, "APPROVE\r\n")
+    )
+    return raw_from_text(FIRST_HEADERS + content + last + "\r\n\r\n" + body)
+
+
+LAST_HEADER_SECOND_FROM_LINES = [
+    "From : attacker@company.com",
+    "FROM : attacker@company.com",
+    "From\t: attacker@company.com",
+    "From  : attacker@company.com",
+]
+
+
+@pytest.mark.parametrize("multipart", [False, True], ids=["single-part", "multipart"])
+@pytest.mark.parametrize("last", LAST_HEADER_SECOND_FROM_LINES)
+def test_a_second_from_as_the_last_header_line_makes_the_sender_ambiguous(last, multipart):
+    raw = with_a_last_header(last, multipart=multipart)
+
+    for settings in (BOSS_ONLY, SETTINGS):
+        facts = extract_facts(raw, settings)
+        assert (facts.single_sender, facts.internal) == (False, False)
+
+
+@pytest.mark.parametrize(
+    "first_line",
+    ["From : attacker@company.com\r\n", "FROM: attacker@company.com\r\n"],
+    ids=["from-space-colon-first", "uppercase-first"],
+)
+def test_a_second_from_as_the_first_header_line_makes_the_sender_ambiguous(first_line):
+    raw = raw_with_headers(first_line + COMPANY_PASS + "From: boss@company.com\r\n")
+
+    facts = extract_facts(raw, BOSS_ONLY)
+
+    assert (facts.single_sender, facts.internal) == (False, False)
+
+
+def test_a_clean_multipart_reply_with_one_from_line_is_still_a_single_internal_sender():
+    raw = with_a_last_header("X-Mailer: ProtonMail", multipart=True)
+
+    facts = extract_facts(raw, BOSS_ONLY)
+
+    assert (facts.single_sender, facts.internal) == (True, True)
+
+
+def test_from_inside_a_header_value_or_a_body_part_is_not_a_from_line():
+    headers = (
+        "Subject: Re: from: you\r\nX-Original-From: x@y.example\r\n"
+        "X-Note: forwarded\r\n from: z@y.example\r\n"
+    )
+    part_with_a_from = MULTIPART_PARTS.replace(
+        "Content-Type: text/plain", "From: inside@a.part\r\nContent-Type: text/plain", 1
+    )
+    raw = raw_from_text(FIRST_HEADERS + headers + MULTIPART_CONTENT + "\r\n" + part_with_a_from)
+
+    assert extract_facts(raw, BOSS_ONLY).single_sender

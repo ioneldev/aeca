@@ -38,6 +38,8 @@ CANONICAL_GMAIL_DOMAIN = "gmail.com"
 MISSING_DEFECTS = "the header records no defects attribute"
 HEADER_BLOCK_END = b"\r\n\r\n"
 BARE_LINE_END = re.compile(rb"\r(?!\n)|(?<!\r)\n")
+# A From field as RFC 5322's obsolete syntax allows it: whitespace may stand before the colon.
+FROM_LINE = re.compile(rb"^from[ \t]*:", re.IGNORECASE | re.MULTILINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,12 +188,17 @@ def _first_address(message: EmailMessage, header_name: str) -> tuple[str, str]:
 
 
 # Ruling R43: Python can drop a second From before the header parser sees it, as a `From :` line
-# (a defect on the message alone) or a line split off by a bare CR (no defect anywhere). Every real
-# delivered message measured had no message defect and no bare line end in its headers.
+# (a defect on the message alone, or none at all as the first or the last header line, which it
+# takes for an envelope line or moves into the body) or a line split off by a bare CR (no defect
+# anywhere). So the raw header block itself must hold exactly one From line, and no bare line end.
+# Every real delivered message measured passes.
 def _headers_are_clean(raw: RawEmail, message: EmailMessage) -> bool:
     if not _only_undecodable_bytes(message.defects):
         return False
-    return BARE_LINE_END.search(_header_block(raw.rfc822)) is None
+    header_block = _header_block(raw.rfc822)
+    if BARE_LINE_END.search(header_block) is not None:
+        return False
+    return len(FROM_LINE.findall(header_block)) == 1
 
 
 def _header_block(rfc822: bytes) -> bytes:
