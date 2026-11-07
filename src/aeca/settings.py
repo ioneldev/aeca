@@ -42,6 +42,11 @@ class Settings:
     rehearsal_external_sender: str | None
     rehearsal_external_app_password: SecretStr | None
 
+    @property
+    def manager_or_account(self) -> str:
+        """Where approval requests, urgent notices and alerts go (spec §4.5)."""
+        return self.manager_address or self.gmail_address
+
 
 @dataclass(frozen=True)
 class MailAccount:

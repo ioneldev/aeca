@@ -51,7 +51,7 @@ class InboxRig:
         self.options = options or RigOptions()
         self.journal: list[str] = []
         self.mailbox = FakeMailbox(ACCOUNT, journal=self.journal)
-        self.calendar = FakeCalendar()
+        self.calendar = FakeCalendar(journal=self.journal)
         self.audit = MemoryAudit(self.journal)
         self.tracer = RecordingTracer()
         self.clock = FixedClock()

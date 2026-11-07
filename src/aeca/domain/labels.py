@@ -13,6 +13,7 @@ AWAITING = "AECA/awaiting"
 # Gmail's own labels, which AECA reads and sets but never creates.
 INBOX = "INBOX"
 SENT = "SENT"
+DRAFT = "DRAFT"
 STARRED = "STARRED"
 SPAM_SYSTEM_LABEL = "SPAM"
 

@@ -28,7 +28,7 @@ from aeca.application.ports import (
 from aeca.application.state_ports import AuditLog, StateStore
 from aeca.domain.actions import Action, ActionStatus
 from aeca.domain.approval import ApprovalState
-from aeca.domain.audit import ActionSummary, AuditLine, Outcome
+from aeca.domain.audit import ActionSummary, AuditLine, Outcome, action_summary
 from aeca.domain.decision import Decision
 from aeca.domain.errors import EmailError
 from aeca.domain.facts import EmailFacts, FactSettings, extract_facts
@@ -150,6 +150,7 @@ class InboxProcessor:
         thread = tuple(self._deps.mailbox.thread_summaries(facts.thread_id))
         incoming = _Incoming(facts=facts, thread=thread)
         if self._is_approval_thread(incoming):
+            self._label_if_its_approval_closed(facts)
             return None
         return self._finish(incoming, spend_before)
 
@@ -159,6 +160,17 @@ class InboxProcessor:
         if _starts_with_an_approval_request(incoming.thread):
             return True
         return self._deps.store.approval_by_request_thread(incoming.facts.thread_id) is not None
+
+    # The approval loop reads only the threads of open approvals, so an answer that arrives after
+    # its approval closed is read by nobody: labelled here, it stops coming back every tick.
+    def _label_if_its_approval_closed(self, facts: EmailFacts) -> None:
+        approval = self._deps.store.approval_by_request_thread(facts.thread_id)
+        if approval is None or approval.is_open:
+            return
+        self._mark_processed(facts)
+        self._deps.tracer.event(
+            "answer_after_close", message_id=facts.message_id, approval_id=approval.id
+        )
 
     def _finish(self, incoming: _Incoming, spend_before: Spend) -> AuditLine:
         facts = incoming.facts
@@ -272,9 +284,7 @@ class InboxProcessor:
 
     def _summary_of(self, action: Action) -> ActionSummary:
         record = self._deps.store.action_get(action.key)
-        status = ActionStatus.PENDING if record is None else record.status
-        detail = action.args.get("label") or action.args.get("template") or ""
-        return (action.verb.value, detail, status.value)
+        return action_summary(action, ActionStatus.PENDING if record is None else record.status)
 
     # An email that failed before carries AECA/error; once it is processed the label is a lie.
     def _mark_processed(self, facts: EmailFacts) -> None:

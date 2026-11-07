@@ -57,6 +57,9 @@ class EmailFacts:
     references: str | None
     sender: str
     sender_name: str
+    # One From header holding one address. Otherwise the sender AECA reads may not be the one
+    # Gmail's DMARC result was judged for.
+    single_sender: bool
     reply_to: str | None
     reply_to_differs: bool
     subject: str
@@ -94,6 +97,7 @@ def extract_facts(raw: RawEmail, settings: FactSettings) -> EmailFacts:
         references=_bounded_optional(_header(message, "References"), REFERENCES_LIMIT),
         sender=sender,
         sender_name=bounded(visible(sender_name), SENDER_NAME_LIMIT),
+        single_sender=_has_a_single_sender(message),
         reply_to=_bounded_optional(reply_to, REPLY_TO_LIMIT),
         reply_to_differs=reply_to is not None and reply_to != sender,
         subject=bounded(visible(_header(message, "Subject") or ""), SUBJECT_LIMIT),
@@ -171,6 +175,16 @@ def _first_address(message: EmailMessage, header_name: str) -> tuple[str, str]:
         return first.display_name, first.addr_spec.lower()
     except Exception:
         return "", ""
+
+
+def _has_a_single_sender(message: EmailMessage) -> bool:
+    try:
+        headers = list(message.get_all("From", []))
+        if len(headers) != 1 or not isinstance(headers[0], AddressHeader):
+            return False
+        return len(headers[0].addresses) == 1 and bool(headers[0].addresses[0].addr_spec)
+    except Exception:
+        return False
 
 
 def _counts_as_internal(sender: str, auth: AuthResults, settings: FactSettings) -> bool:

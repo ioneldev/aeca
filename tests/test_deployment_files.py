@@ -34,7 +34,7 @@ def test_the_proxy_and_ca_settings_pass_through_by_interpolation_never_by_value(
 
 
 def test_the_start_stop_logs_and_audit_targets_run_the_preflight_first() -> None:
-    for target in ("start", "stop", "logs", "audit"):
+    for target in ("start", "stop", "logs", "audit", "approvals"):
         recipe = recipe_of(target)
         assert "$(PREFLIGHT) env-run" in recipe[0], target
 
@@ -44,3 +44,4 @@ def test_the_targets_run_the_documented_compose_commands() -> None:
     assert "docker compose stop aeca" in recipe_of("stop")[-1]
     assert "docker compose logs -f aeca" in recipe_of("logs")[-1]
     assert "docker compose run --rm --no-deps aeca audit" in recipe_of("audit")[-1]
+    assert "docker compose run --rm --no-deps aeca approvals" in recipe_of("approvals")[-1]

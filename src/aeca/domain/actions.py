@@ -1,3 +1,4 @@
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -41,3 +42,14 @@ class ActionRecord:
     approval_id: str | None
     status: ActionStatus
     ref: str | None
+
+
+def actions_to_json(actions: tuple[Action, ...]) -> str:
+    return json.dumps([{"verb": a.verb.value, "key": a.key, "args": dict(a.args)} for a in actions])
+
+
+def actions_from_json(text: str) -> tuple[Action, ...]:
+    return tuple(
+        Action(verb=Verb(item["verb"]), key=item["key"], args=item["args"])
+        for item in json.loads(text)
+    )

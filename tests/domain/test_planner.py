@@ -18,8 +18,10 @@ from aeca.domain.planner import (
     busy_intervals,
     choose_slot,
     find_alternatives,
+    inside_work_hours,
     meeting_duration,
     parse_work_hours,
+    slot_is_free,
 )
 from aeca.domain.time_range import Interval
 
@@ -672,3 +674,40 @@ def test_the_alternatives_search_skips_a_day_with_no_working_time_left() -> None
     span = alternatives_search_span(friday_evening, make_settings(alternative_days=2))
 
     assert span == interval(friday_evening, at_day(8, 17))
+
+
+# --- the re-check on APPROVE (spec §4.4) ---
+
+
+def slot(start: datetime) -> Interval:
+    return Interval(start, start + HALF_AN_HOUR)
+
+
+def test_a_slot_is_free_when_nothing_busy_comes_within_the_buffer() -> None:
+    busy = (Interval(on_monday(14), on_monday(14, 50)),)
+
+    assert slot_is_free(slot(on_monday(15)), busy, buffer_minutes=10)
+    assert not slot_is_free(slot(on_monday(15)), busy, buffer_minutes=11)
+    assert not slot_is_free(slot(on_monday(14, 30)), busy, buffer_minutes=0)
+    assert slot_is_free(slot(on_monday(15)), (), buffer_minutes=10)
+
+
+def test_a_slot_is_compared_with_busy_time_as_an_instant() -> None:
+    busy_in_paris = (
+        Interval(
+            datetime(2026, 11, 9, 14, 0, tzinfo=PARIS), datetime(2026, 11, 9, 14, 30, tzinfo=PARIS)
+        ),
+    )
+
+    assert not slot_is_free(slot(on_monday(15)), busy_in_paris, buffer_minutes=0)
+    assert slot_is_free(slot(on_monday(16)), busy_in_paris, buffer_minutes=0)
+
+
+def test_inside_work_hours_is_read_in_the_calendars_zone() -> None:
+    settings = make_settings()
+
+    assert inside_work_hours(slot(on_monday(9)), settings)
+    assert inside_work_hours(slot(on_monday(16, 30)), settings)
+    assert not inside_work_hours(slot(on_monday(16, 45)), settings)
+    assert not inside_work_hours(slot(on_monday(8, 30)), settings)
+    assert not inside_work_hours(slot(at_day(5, 10)), settings)

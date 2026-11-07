@@ -1,6 +1,7 @@
 """The state store is what makes every action run once, so these tests read it back from disk."""
 
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -255,28 +256,28 @@ def user_version_of(path: Path) -> int:
         connection.close()
 
 
-def test_a_fresh_file_is_created_at_version_two(tmp_path: Path) -> None:
+def test_a_fresh_file_is_created_at_version_three(tmp_path: Path) -> None:
     path = tmp_path / "state.db"
 
     SqliteState(path)
 
-    assert user_version_of(path) == 2
+    assert user_version_of(path) == 3
 
 
 def test_a_later_version_is_refused_and_left_as_it_is(tmp_path: Path) -> None:
     path = tmp_path / "state.db"
     SqliteState(path)
     connection = sqlite3.connect(path)
-    connection.execute("PRAGMA user_version = 3")
+    connection.execute("PRAGMA user_version = 4")
     connection.commit()
     connection.close()
 
     with pytest.raises(AecaError) as refusal:
         SqliteState(path)
 
-    assert "3" in str(refusal.value)
+    assert "4" in str(refusal.value)
     assert "back up" in refusal.value.next_action.lower()
-    assert user_version_of(path) == 3
+    assert user_version_of(path) == 4
 
 
 def test_a_state_in_memory_works_for_tests(tmp_path: Path) -> None:
@@ -442,10 +443,10 @@ def test_a_file_holding_a_journal_table_at_version_zero_is_refused(tmp_path: Pat
     assert table_names_of(path) == {"journal"}
 
 
-def test_a_version_three_file_is_refused_and_leaves_no_lock(tmp_path: Path) -> None:
+def test_a_version_four_file_is_refused_and_leaves_no_lock(tmp_path: Path) -> None:
     path = tmp_path / "state.db"
     connection = sqlite3.connect(path)
-    connection.execute("PRAGMA user_version = 3")
+    connection.execute("PRAGMA user_version = 4")
     connection.close()
 
     with pytest.raises(AecaError):
@@ -677,21 +678,30 @@ def write_a_version_one_file(path: Path) -> None:
 
 
 def journal_columns_of(path: Path) -> set[str]:
+    return columns_of(path, "journal")
+
+
+def approval_columns_of(path: Path) -> set[str]:
+    return columns_of(path, "approvals")
+
+
+def columns_of(path: Path, table: str) -> set[str]:
     connection = sqlite3.connect(path)
     try:
-        return {row[1] for row in connection.execute("PRAGMA table_info(journal)")}
+        return {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
     finally:
         connection.close()
 
 
-def test_a_version_one_file_migrates_to_version_two_and_keeps_its_rows(tmp_path: Path) -> None:
+def test_a_version_one_file_migrates_to_version_three_and_keeps_its_rows(tmp_path: Path) -> None:
     path = tmp_path / "state.db"
     write_a_version_one_file(path)
 
     state = SqliteState(path)
 
-    assert user_version_of(path) == 2
+    assert user_version_of(path) == 3
     assert {"audited", "complete"} <= journal_columns_of(path)
+    assert {"opened_at", "source_subject"} <= approval_columns_of(path)
     entry = state.journal_get("m1")
     assert entry is not None and entry.actions == (label_action(),)
     assert entry.audited is False
@@ -708,7 +718,7 @@ def test_a_migrated_file_opens_again_without_migrating_twice(tmp_path: Path) -> 
 
     reopened = SqliteState(path)
 
-    assert user_version_of(path) == 2
+    assert user_version_of(path) == 3
     assert reopened.journal_get("m1") is not None
 
 
@@ -719,7 +729,7 @@ class VersionWriteFails:
         self._real = real
 
     def execute(self, sql: str, *parameters: object) -> sqlite3.Cursor:
-        if sql.startswith("PRAGMA user_version = 2"):
+        if sql.startswith("PRAGMA user_version = 3"):
             raise sqlite3.OperationalError("disk I/O error")
         return self._real.execute(sql, *parameters)  # type: ignore[arg-type]
 
@@ -751,6 +761,154 @@ def test_a_failed_migration_leaves_the_file_at_version_one(
     assert "disk I/O error" in str(refusal.value)
     assert user_version_of(path) == 1
     assert journal_columns_of(path) == {
-        "source_message_id", "decision_json", "actions_json", "awaiting_approval_json",
-    }  # fmt: skip
+        "source_message_id",
+        "decision_json",
+        "actions_json",
+        "awaiting_approval_json",
+    }
     assert write_lock_is_free(path)
+
+
+# R16: closing an approval releases its holds in the same write
+
+
+@pytest.mark.parametrize("open_state", [ApprovalState.AWAITING, ApprovalState.APPROVED])
+def test_an_open_approval_keeps_its_holds(state: SqliteState, open_state: ApprovalState) -> None:
+    state.approval_save(approval_of(holds=(interval_starting_in(60),)))
+
+    state.approval_save(approval_of(state=open_state, holds=(interval_starting_in(60),)))
+
+    assert [hold.approval_id for hold in state.holds_active(NOON)] == ["appr-m1"]
+
+
+@pytest.mark.parametrize(
+    "closed",
+    [
+        ApprovalState.REJECTED,
+        ApprovalState.SUPERSEDED,
+        ApprovalState.EXECUTED,
+        ApprovalState.FAILED,
+    ],
+)
+def test_saving_a_closed_approval_releases_its_holds(
+    state: SqliteState, closed: ApprovalState
+) -> None:
+    state.approval_save(approval_of(holds=(interval_starting_in(60), interval_starting_in(90))))
+    state.approval_save(
+        approval_of(
+            "appr-m2",
+            actions=(reply_action("k2"),),
+            source_thread_id="t2",
+            request_thread_id="req-t2",
+            holds=(interval_starting_in(120),),
+        )
+    )
+
+    state.approval_save(approval_of(state=closed, holds=(interval_starting_in(60),)))
+
+    assert [hold.approval_id for hold in state.holds_active(NOON)] == ["appr-m2"]
+
+
+def test_a_closed_approval_saved_for_the_first_time_writes_no_hold(state: SqliteState) -> None:
+    state.approval_save(approval_of(state=ApprovalState.REJECTED))
+
+    assert state.holds_active(NOON) == []
+
+
+def test_approved_approvals_are_listed_in_the_order_they_were_opened(state: SqliteState) -> None:
+    state.approval_save(approval_of("a1", actions=(reply_action("k1"),), request_thread_id="r1"))
+    state.approval_save(approval_of("a2", actions=(reply_action("k2"),), request_thread_id="r2"))
+    state.approval_save(approval_of("a3", actions=(reply_action("k3"),), request_thread_id="r3"))
+    for approval_id in ("a3", "a1"):
+        saved = state.approval_get(approval_id)
+        assert saved is not None
+        state.approval_save(replace(saved, state=ApprovalState.APPROVED))
+
+    assert [approval.id for approval in state.approvals_approved()] == ["a1", "a3"]
+    assert [approval.id for approval in state.approvals_awaiting()] == ["a2"]
+
+
+def test_an_approval_keeps_when_it_was_opened_and_its_source_subject(state: SqliteState) -> None:
+    opened = approval_of(opened_at=NOON, source_subject="Änderung")
+
+    state.approval_save(opened)
+
+    assert state.approval_get("appr-m1") == opened
+
+
+def test_an_approval_saved_without_an_opening_time_reads_back_without_one(
+    state: SqliteState,
+) -> None:
+    state.approval_save(approval_of())
+
+    saved = state.approval_get("appr-m1")
+    assert saved is not None
+    assert (saved.opened_at, saved.source_subject) == (None, "")
+
+
+# an action sent outside any journal entry: the approval request and the help reply
+
+
+def test_registering_an_action_adds_it_once_as_pending_and_automatic(state: SqliteState) -> None:
+    request = Action(verb=Verb.REQUEST_APPROVAL, key="a-1", args={"to": "boss@example.com"})
+
+    state.action_register(request, "m1")
+    state.action_update("a-1", ActionStatus.EXECUTING, ref="draft-1")
+    state.action_register(request, "m1")
+
+    record = state.action_get("a-1")
+    assert record is not None
+    assert (record.status, record.ref, record.approval_id, record.source_message_id) == (
+        ActionStatus.EXECUTING,
+        "draft-1",
+        None,
+        "m1",
+    )
+
+
+def test_registering_an_action_under_another_shape_or_gate_is_refused(state: SqliteState) -> None:
+    state.action_register(
+        Action(verb=Verb.SEND_REPLY, key="k-help", args={"template": "help"}), "m1"
+    )
+    state.approval_save(approval_of())
+
+    with pytest.raises(AecaError):
+        state.action_register(
+            Action(verb=Verb.SEND_REPLY, key="k-help", args={"template": "other"}), "m1"
+        )
+    with pytest.raises(AecaError):
+        state.action_register(reply_action(), "m1")
+
+
+# version 2 to version 3: when an approval was opened, and its source email's subject
+
+
+def write_a_version_two_file(path: Path) -> None:
+    write_a_version_one_file(path)
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        "ALTER TABLE journal ADD COLUMN audited INTEGER NOT NULL DEFAULT 0;"
+        "ALTER TABLE journal ADD COLUMN complete INTEGER NOT NULL DEFAULT 0;"
+        "INSERT INTO approvals VALUES ('a1', 1, 'm1', 't1', 0, '[]', 'awaiting', 'r1',"
+        " 'Wants a sync.', '[]');"
+        "PRAGMA user_version = 2;"
+    )
+    connection.close()
+
+
+def test_a_version_two_file_migrates_to_version_three_and_keeps_its_approvals(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.db"
+    write_a_version_two_file(path)
+
+    state = SqliteState(path)
+
+    assert user_version_of(path) == 3
+    [approval] = state.approvals_awaiting()
+    assert (approval.id, approval.summary, approval.request_thread_id) == (
+        "a1",
+        "Wants a sync.",
+        "r1",
+    )
+    assert (approval.opened_at, approval.source_subject) == (None, "")

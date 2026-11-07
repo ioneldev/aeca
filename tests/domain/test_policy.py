@@ -23,6 +23,9 @@ from aeca.domain.policy import (
     ActionPlan,
     PolicyContext,
     PolicySettings,
+    alternatives_reply,
+    for_attempt,
+    is_bound_to_the_slot,
     plan_actions,
 )
 from aeca.domain.replies import (
@@ -461,3 +464,44 @@ def test_a_plan_never_addresses_a_recipient(label: Label) -> None:
 
     for action in (*result.automatic, *result.for_approval):
         assert not {"to", "recipient", "address"} & set(action.args)
+
+
+# --- a superseded approval's next attempt (spec §4.4, §4.5) ---
+
+
+def test_the_alternatives_reply_for_an_attempt_is_the_one_the_plan_makes() -> None:
+    facts = make_facts(message_id="m-7")
+    planned = plan(
+        decision(Label.MEETING_REQUEST, meeting=MEETING),
+        facts=facts,
+        meeting=NoSlotFree(THREE_SLOTS),
+        attempt=2,
+    )
+
+    built = alternatives_reply("m-7", THREE_SLOTS, attempt=2)
+
+    assert planned.for_approval == (built,)
+
+
+def test_an_action_for_another_attempt_is_the_one_the_plan_makes_for_that_attempt() -> None:
+    facts = make_facts(message_id="m-7", internal=True)
+    chosen = decision(Label.MEETING_REQUEST, meeting=MEETING, urgent=True, urgent_draft=DRAFT)
+    first = plan(chosen, facts=facts, meeting=SlotFree(SLOT, False), attempt=0)
+    second = plan(chosen, facts=facts, meeting=SlotFree(SLOT, False), attempt=1)
+
+    moved = tuple(
+        for_attempt(action, source_message_id="m-7", attempt=1) for action in first.for_approval
+    )
+
+    assert moved == second.for_approval
+
+
+def test_the_event_and_its_confirmation_are_bound_to_the_slot_and_nothing_else_is() -> None:
+    chosen = decision(Label.MEETING_REQUEST, meeting=MEETING, urgent=True, urgent_draft=DRAFT)
+    planned = plan(chosen, facts=INTERNAL, meeting=SlotFree(SLOT, False))
+    alternatives = plan(chosen, facts=INTERNAL, meeting=NoSlotFree(THREE_SLOTS))
+
+    bound = [is_bound_to_the_slot(action) for action in planned.for_approval]
+
+    assert bound == [True, True, False]
+    assert not any(is_bound_to_the_slot(action) for action in alternatives.for_approval)

@@ -97,7 +97,7 @@ def choose_slot(request: SlotRequest) -> SlotFree | None:
     for window in request.windows:
         slot = _first_free_slot_in(window, request)
         if slot is not None:
-            return SlotFree(slot=slot, outside_work_hours=not _inside_work_hours(slot, settings))
+            return SlotFree(slot=slot, outside_work_hours=not inside_work_hours(slot, settings))
     return None
 
 
@@ -110,6 +110,19 @@ def find_alternatives(request: AlternativesRequest) -> tuple[Interval, ...]:
         if len(found) == MAX_ALTERNATIVES:
             break
     return tuple(found)
+
+
+def slot_is_free(slot: Interval, busy: Sequence[Interval], *, buffer_minutes: int) -> bool:
+    """Whether nothing busy comes within the buffer of the slot: the re-check on APPROVE."""
+    return not _collides(slot, _with_buffer(busy, buffer_minutes))
+
+
+def inside_work_hours(slot: Interval, settings: PlanSettings) -> bool:
+    day = slot.start.astimezone(settings.zone).date()
+    if day.weekday() not in settings.work_hours.days:
+        return False
+    opening, closing = _work_day_boundaries(day, settings)
+    return in_utc(opening) <= in_utc(slot.start) and in_utc(slot.end) <= in_utc(closing)
 
 
 def alternatives_search_span(now: datetime, settings: PlanSettings) -> Interval:
@@ -185,14 +198,6 @@ def _fits_in_window(slot: Interval, window: Window) -> bool:
 
 def _collides(slot: Interval, blocked: Sequence[Interval]) -> bool:
     return any(slot.overlaps(span) for span in blocked)
-
-
-def _inside_work_hours(slot: Interval, settings: PlanSettings) -> bool:
-    day = slot.start.astimezone(settings.zone).date()
-    if day.weekday() not in settings.work_hours.days:
-        return False
-    opening, closing = _work_day_boundaries(day, settings)
-    return in_utc(opening) <= in_utc(slot.start) and in_utc(slot.end) <= in_utc(closing)
 
 
 def _work_day_boundaries(day: date, settings: PlanSettings) -> tuple[datetime, datetime]:

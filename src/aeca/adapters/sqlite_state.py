@@ -8,18 +8,32 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from aeca.domain.actions import Action, ActionRecord, ActionStatus, Verb
+from aeca.domain.actions import (
+    Action,
+    ActionRecord,
+    ActionStatus,
+    Verb,
+    actions_from_json,
+    actions_to_json,
+)
 from aeca.domain.approval import Approval, ApprovalState, Hold
 from aeca.domain.errors import AecaError
 from aeca.domain.journal import JournalEntry
 from aeca.domain.time_range import Interval, in_utc
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # Version 2 adds the journal's audited and complete flags to version 1.
-_MIGRATION_FROM_VERSION_1 = (
+_VERSION_1_TO_2 = (
     "ALTER TABLE journal ADD COLUMN audited INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE journal ADD COLUMN complete INTEGER NOT NULL DEFAULT 0",
 )
+# Version 3 adds when each approval was opened, and its source email's subject, for
+# `aeca approvals`.
+_VERSION_2_TO_3 = (
+    "ALTER TABLE approvals ADD COLUMN opened_at TEXT",
+    "ALTER TABLE approvals ADD COLUMN source_subject TEXT NOT NULL DEFAULT ''",
+)
+_MIGRATIONS = {1: (*_VERSION_1_TO_2, *_VERSION_2_TO_3), 2: _VERSION_2_TO_3}
 
 _SCHEMA = """
 CREATE TABLE journal (
@@ -50,7 +64,9 @@ CREATE TABLE approvals (
     state TEXT NOT NULL,
     request_thread_id TEXT,
     summary TEXT NOT NULL,
-    holds_json TEXT NOT NULL
+    holds_json TEXT NOT NULL,
+    opened_at TEXT,
+    source_subject TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX approvals_by_request_thread ON approvals (request_thread_id);
 CREATE TABLE holds (
@@ -89,8 +105,8 @@ class SqliteState:
         found = self._connection.execute("PRAGMA user_version").fetchone()[0]
         if found == SCHEMA_VERSION:
             return
-        if found == 1:
-            self._migrate_from_version_1()
+        if found in _MIGRATIONS:
+            self._migrate(_MIGRATIONS[found])
             return
         if found != 0:
             raise AecaError(
@@ -111,10 +127,10 @@ class SqliteState:
         self._create_schema()
 
     # One transaction: SQLite rolls back ALTER TABLE and user_version too, so a failure leaves
-    # the file at version 1, whole, for the next start to migrate again.
-    def _migrate_from_version_1(self) -> None:
+    # the file at the version it had, whole, for the next start to migrate again.
+    def _migrate(self, statements: tuple[str, ...]) -> None:
         with self._transaction() as connection:
-            for statement in _MIGRATION_FROM_VERSION_1:
+            for statement in statements:
                 connection.execute(statement)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -172,8 +188,8 @@ class SqliteState:
                 (
                     entry.source_message_id,
                     entry.decision_json,
-                    _actions_to_json(entry.actions),
-                    _actions_to_json(entry.awaiting_approval),
+                    actions_to_json(entry.actions),
+                    actions_to_json(entry.awaiting_approval),
                 ),
             )
             if inserted.rowcount == 1:
@@ -215,6 +231,10 @@ class SqliteState:
                     f"no action with key {key!r} is recorded",
                     next_action="Record the action in a journal entry or an approval first",
                 )
+
+    def action_register(self, action: Action, source_message_id: str) -> None:
+        with self._transaction():
+            self._register_actions((action,), source_message_id, approval_id=None)
 
     # An action that waits for approval is never listed: a resume would run it unapproved.
     def actions_unfinished(self) -> list[ActionRecord]:
@@ -267,40 +287,50 @@ class SqliteState:
             )
             connection.execute(
                 "INSERT INTO approvals (id, sequence, source_message_id, source_thread_id,"
-                " attempt, actions_json, state, request_thread_id, summary, holds_json)"
+                " attempt, actions_json, state, request_thread_id, summary, holds_json,"
+                " opened_at, source_subject)"
                 " VALUES (?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM approvals),"
-                " ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET"
                 " source_message_id = excluded.source_message_id,"
                 " source_thread_id = excluded.source_thread_id, attempt = excluded.attempt,"
                 " actions_json = excluded.actions_json, state = excluded.state,"
                 " request_thread_id = excluded.request_thread_id, summary = excluded.summary,"
-                " holds_json = excluded.holds_json",
+                " holds_json = excluded.holds_json, opened_at = excluded.opened_at,"
+                " source_subject = excluded.source_subject",
                 (
                     approval.id,
                     approval.source_message_id,
                     approval.source_thread_id,
                     approval.attempt,
-                    _actions_to_json(approval.actions),
+                    actions_to_json(approval.actions),
                     approval.state.value,
                     approval.request_thread_id,
                     approval.summary,
                     json.dumps([_interval_to_json(interval) for interval in approval.holds]),
+                    None if approval.opened_at is None else approval.opened_at.isoformat(),
+                    approval.source_subject,
                 ),
             )
-            connection.execute("DELETE FROM holds WHERE approval_id = ?", (approval.id,))
-            connection.executemany(
-                "INSERT INTO holds VALUES (?, ?, ?, ?)",
-                [
-                    (
-                        approval.source_thread_id,
-                        approval.id,
-                        interval.start.isoformat(),
-                        interval.end.isoformat(),
-                    )
-                    for interval in approval.holds
-                ],
-            )
+            self._replace_holds(approval)
+
+    # R16: only an open approval holds its slots, so closing one releases them in the same write.
+    def _replace_holds(self, approval: Approval) -> None:
+        self._connection.execute("DELETE FROM holds WHERE approval_id = ?", (approval.id,))
+        if not approval.is_open:
+            return
+        self._connection.executemany(
+            "INSERT INTO holds VALUES (?, ?, ?, ?)",
+            [
+                (
+                    approval.source_thread_id,
+                    approval.id,
+                    interval.start.isoformat(),
+                    interval.end.isoformat(),
+                )
+                for interval in approval.holds
+            ],
+        )
 
     def approval_get(self, approval_id: str) -> Approval | None:
         row = self._connection.execute(
@@ -315,9 +345,14 @@ class SqliteState:
         return None if row is None else _approval_from(row)
 
     def approvals_awaiting(self) -> list[Approval]:
+        return self._approvals_in(ApprovalState.AWAITING)
+
+    def approvals_approved(self) -> list[Approval]:
+        return self._approvals_in(ApprovalState.APPROVED)
+
+    def _approvals_in(self, state: ApprovalState) -> list[Approval]:
         rows = self._connection.execute(
-            "SELECT * FROM approvals WHERE state = ? ORDER BY sequence",
-            (ApprovalState.AWAITING.value,),
+            "SELECT * FROM approvals WHERE state = ? ORDER BY sequence", (state.value,)
         ).fetchall()
         return [_approval_from(row) for row in rows]
 
@@ -434,17 +469,6 @@ def _describe_gate(approval_id: str | None) -> str:
     return "as automatic" if approval_id is None else f"under approval {approval_id!r}"
 
 
-def _actions_to_json(actions: tuple[Action, ...]) -> str:
-    return json.dumps([{"verb": a.verb.value, "key": a.key, "args": dict(a.args)} for a in actions])
-
-
-def _actions_from_json(text: str) -> tuple[Action, ...]:
-    return tuple(
-        Action(verb=Verb(item["verb"]), key=item["key"], args=item["args"])
-        for item in json.loads(text)
-    )
-
-
 def _interval_to_json(interval: Interval) -> list[str]:
     return [interval.start.isoformat(), interval.end.isoformat()]
 
@@ -457,8 +481,8 @@ def _journal_entry_from(row: sqlite3.Row) -> JournalEntry:
     return JournalEntry(
         source_message_id=row["source_message_id"],
         decision_json=row["decision_json"],
-        actions=_actions_from_json(row["actions_json"]),
-        awaiting_approval=_actions_from_json(row["awaiting_approval_json"]),
+        actions=actions_from_json(row["actions_json"]),
+        awaiting_approval=actions_from_json(row["awaiting_approval_json"]),
         audited=bool(row["audited"]),
     )
 
@@ -479,11 +503,13 @@ def _approval_from(row: sqlite3.Row) -> Approval:
         source_message_id=row["source_message_id"],
         source_thread_id=row["source_thread_id"],
         attempt=row["attempt"],
-        actions=_actions_from_json(row["actions_json"]),
+        actions=actions_from_json(row["actions_json"]),
         state=ApprovalState(row["state"]),
         request_thread_id=row["request_thread_id"],
         summary=row["summary"],
         holds=tuple(_interval_from_json(pair) for pair in json.loads(row["holds_json"])),
+        opened_at=None if row["opened_at"] is None else datetime.fromisoformat(row["opened_at"]),
+        source_subject=row["source_subject"],
     )
 
 

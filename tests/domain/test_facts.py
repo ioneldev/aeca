@@ -445,3 +445,37 @@ def test_one_unreadable_authentication_header_does_not_hide_googles(monkeypatch)
     assert facts_module._all_headers(Message(), "Authentication-Results") == [
         "mx.google.com; dmarc=fail"
     ]
+
+
+# One From with one address: anything else lets the address AECA reads differ from the one
+# Gmail's DMARC result was judged for.
+
+
+def raw_with_headers(header_lines: str) -> RawEmail:
+    rfc822 = (header_lines + "Subject: APPROVE\r\n\r\nAPPROVE\r\n").encode()
+    return RawEmail(
+        message_id="m1",
+        thread_id="t1",
+        label_ids=frozenset({"INBOX"}),
+        rfc822=rfc822,
+        internal_date=datetime(2026, 11, 7, 9, 0, tzinfo=UTC),
+    )
+
+
+def test_one_from_with_one_address_is_a_single_sender():
+    assert extract_facts(make_raw(sender='"Boss" <boss@example.com>'), SETTINGS).single_sender
+
+
+@pytest.mark.parametrize(
+    "header_lines",
+    [
+        "From: boss@example.com, attacker@evil.example\r\n",
+        "From: boss@example.com\r\nFrom: attacker@evil.example\r\n",
+        "From: Team: boss@example.com, attacker@evil.example;\r\n",
+        "From: \r\n",
+        "",
+    ],
+    ids=["two-addresses", "two-from-headers", "group", "empty", "none"],
+)
+def test_anything_else_is_not_a_single_sender(header_lines):
+    assert not extract_facts(raw_with_headers(header_lines), SETTINGS).single_sender

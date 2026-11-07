@@ -226,13 +226,10 @@ class _Planner:
         return not gated or block in REFUSED_EVEN_WITH_APPROVAL
 
     def _action(self, step: Step, *, gated: bool) -> Action:
-        args = self._args(step)
-        discriminator = args.get("label") or args.get("template") or ""
-        name = f"{step.verb.value}:{discriminator}" if discriminator else step.verb.value
-        if gated:
-            name = f"{name}@{self.context.attempt}"
-        return Action(
-            verb=step.verb, key=action_key(self.context.facts.message_id, name), args=args
+        return _keyed(
+            _Unkeyed(verb=step.verb, args=self._args(step)),
+            source_message_id=self.context.facts.message_id,
+            attempt=self.context.attempt if gated else None,
         )
 
     def _args(self, step: Step) -> dict[str, str]:
@@ -258,7 +255,7 @@ class _Planner:
         if isinstance(outcome, SlotFree):
             return {"template": "confirmation", **_slot_args(outcome.slot)}
         if isinstance(outcome, NoSlotFree):
-            return {"template": "alternatives", "slots": _slots_json(outcome.alternatives)}
+            return _alternatives_args(outcome.alternatives)
         if decision.label is Label.SALES_OUTREACH:
             return {"template": ReplyKind.DECLINE.value}
         return {"template": decision.reply.value}
@@ -270,6 +267,53 @@ class _Planner:
             raise ValueError("create_event needs a free slot")
         title = meeting.title if meeting is not None else self.context.facts.subject
         return {**_slot_args(outcome.slot), "title": title}
+
+
+def alternatives_reply(
+    source_message_id: str, alternatives: tuple[Interval, ...], *, attempt: int
+) -> Action:
+    """The gated reply offering free slots, exactly as the plan writes it for that attempt."""
+    return _keyed(
+        _Unkeyed(verb=Verb.SEND_REPLY, args=_alternatives_args(alternatives)),
+        source_message_id=source_message_id,
+        attempt=attempt,
+    )
+
+
+def for_attempt(action: Action, *, source_message_id: str, attempt: int) -> Action:
+    """A gated action keyed for another attempt: a key names one action forever, so a superseded
+    approval's actions are never run again under the next approval."""
+    return _keyed(
+        _Unkeyed(verb=action.verb, args=action.args),
+        source_message_id=source_message_id,
+        attempt=attempt,
+    )
+
+
+def is_bound_to_the_slot(action: Action) -> bool:
+    """The event and its confirmation stand or fall with the slot; nothing else does."""
+    return action.verb is Verb.CREATE_EVENT or action.args.get("template") == "confirmation"
+
+
+@dataclass(frozen=True, slots=True)
+class _Unkeyed:
+    verb: Verb
+    args: Mapping[str, str]
+
+
+# Gated keys carry the attempt, so a superseded approval's next attempt gets new ones.
+def _keyed(unkeyed: _Unkeyed, *, source_message_id: str, attempt: int | None) -> Action:
+    discriminator = unkeyed.args.get("label") or unkeyed.args.get("template") or ""
+    name = f"{unkeyed.verb.value}:{discriminator}" if discriminator else unkeyed.verb.value
+    if attempt is not None:
+        name = f"{name}@{attempt}"
+    return Action(
+        verb=unkeyed.verb, key=action_key(source_message_id, name), args=dict(unkeyed.args)
+    )
+
+
+def _alternatives_args(alternatives: tuple[Interval, ...]) -> dict[str, str]:
+    return {"template": "alternatives", "slots": _slots_json(alternatives)}
 
 
 def _slot_args(slot: Interval) -> dict[str, str]:

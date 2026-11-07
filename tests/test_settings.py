@@ -140,3 +140,15 @@ def test_missing_rehearsal_settings_are_all_named(minimal_run_env: dict[str, str
     assert "REHEARSAL_EXTERNAL_SENDER" in message and "REHEARSAL_EXTERNAL_APP_PASSWORD" in message
     assert "REHEARSAL_INTERNAL_SENDER" not in message
     assert ".env" in raised.value.next_action
+
+
+def test_requests_and_notices_go_to_manager_address_when_set_else_to_the_account(
+    minimal_run_env: dict[str, str],
+) -> None:
+    unset = load_settings({**minimal_run_env, "MANAGER_ADDRESS": ""}, purpose="run")
+    chosen = load_settings(
+        {**minimal_run_env, "MANAGER_ADDRESS": "boss@example.com"}, purpose="run"
+    )
+
+    assert unset.manager_or_account == unset.gmail_address
+    assert chosen.manager_or_account == "boss@example.com"

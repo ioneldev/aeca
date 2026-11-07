@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 GOOGLE_AUTHSERV_ID = "mx.google.com"
 RESULT = re.compile(r"^\s*(spf|dkim|dmarc)\s*=\s*([a-z]+)", re.IGNORECASE)
+HEADER_FROM = re.compile(r"\sheader\.from\s*=\s*([^\s;]+)", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +14,9 @@ class AuthResults:
     spf: str | None
     dkim: str | None
     dmarc: str | None
+    # The From domain Gmail judged DMARC for. A pass proves that domain and no other, so a
+    # caller matches it against the sender it reads; None means nothing can be matched.
+    dmarc_domain: str | None = None
 
 
 def parse_authentication_results(values: Sequence[str]) -> AuthResults:
@@ -40,15 +44,27 @@ def _authserv_id(value: str) -> str:
 def _read_results(value: str) -> AuthResults:
     tokens = _tokenise(value)
     found: dict[str, str] = {}
-    dmarc_results = 0
+    dmarc_segments: list[str] = []
     for segment in tokens.segments[1:]:
         match = RESULT.match(segment)
         if match:
             found.setdefault(match.group(1).lower(), match.group(2).lower())
-            dmarc_results += match.group(1).lower() == "dmarc"
-    if not tokens.well_formed or dmarc_results > 1:
+            if match.group(1).lower() == "dmarc":
+                dmarc_segments.append(segment)
+    trusted = tokens.well_formed and len(dmarc_segments) <= 1
+    if not trusted:
         found["dmarc"] = "fail"
-    return AuthResults(spf=found.get("spf"), dkim=found.get("dkim"), dmarc=found.get("dmarc"))
+    return AuthResults(
+        spf=found.get("spf"),
+        dkim=found.get("dkim"),
+        dmarc=found.get("dmarc"),
+        dmarc_domain=_header_from(dmarc_segments[0]) if trusted and dmarc_segments else None,
+    )
+
+
+def _header_from(dmarc_segment: str) -> str | None:
+    match = HEADER_FROM.search(dmarc_segment)
+    return match.group(1).lower() if match else None
 
 
 def _tokenise(value: str) -> _Tokens:
