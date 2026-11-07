@@ -1,0 +1,179 @@
+# AECA
+
+AECA, the Agentic Email & Calendar Assistant, watches one Gmail inbox. It gives each new email one label, takes the action a policy names for that label, and asks the manager by email before any action that needs approval. It writes one audit line per email.
+
+It is Ionel Cîmpan's take-home for Telekom's Senior Developer Python LLM role. [DESIGN.md](DESIGN.md) is the short version of why it works the way it does. [docs/](docs/architecture.md) holds the rest.
+
+## What it does
+
+| Label | What AECA does | Approval |
+|---|---|---|
+| `MEETING_REQUEST` | A proposed time is free: creates the event, then confirms to the requester. None free, none proposed, or the window is vague: drafts a reply with up to 3 free slots. The invitation is already on the calendar: the label only. | Yes |
+| `TASK` | The label; may acknowledge | No |
+| `INFO_ONLY` | An invoice or receipt gets the `Finance` label and is archived. Anything else: the label; may thank. | No |
+| `SALES_OUTREACH` | A polite decline, then archives | No, unless `SALES_DECLINE_NEEDS_APPROVAL=true` |
+| `MARKETING` | Archives; may acknowledge | No |
+| `SPAM` | Moves to Gmail's Spam folder, never replies | No |
+| `UNKNOWN` | The label only. The email couldn't be classified. | No |
+| `URGENT` (added to any of the above) | Stars it. From an internal sender, also sends the manager a notice with a reply drafted to the sender. | The reply waits for approval |
+
+Every email also gets `AECA/processed` when AECA is done with it, `AECA/awaiting` while an approval is open, and `AECA/error` if it failed.
+
+Code owns the policy. The model labels the email and extracts facts, such as the proposed times. It holds no tool that changes anything, and it writes one reply only: the urgent draft, which the manager reads first. The acknowledgements, thanks, declines and confirmations are templates. Why: [decision 0022](docs/decisions/0022-the-model-writes-only-the-urgent-draft.md).
+
+## Set up
+
+You need Docker with the Compose plugin, `make`, an Anthropic API key, and the Google values for the AECA inbox. On Windows, `make` needs WSL. The image builds on arm64 and amd64.
+
+```sh
+cp .env.example .env     # then fill in .env, see the table below
+make preflight           # checks Docker, Compose, the daemon and .env
+make image               # builds the image locally; nothing is published
+make start               # runs AECA in the background
+```
+
+If `GOOGLE_REFRESH_TOKEN` is empty, run `make auth` once before `make start`. It prints a link; open it, pick the AECA account and consent. The token is written into `.env` without being printed.
+
+If your own consent screen is in Testing mode, tokens last 7 days. Run `make auth` again when one expires.
+
+| Command | What it does |
+|---|---|
+| `make preflight` | Checks `docker`, Compose, a running daemon, `.env`, and that each required setting has a value. It never prints a value. |
+| `make image` | Builds the one image that both Compose services use. |
+| `make auth` | One-time Google consent in the browser. |
+| `make start` | Starts AECA in the background. It restarts itself unless you stop it. |
+| `make stop` | Stops AECA after the email in hand, within 2 minutes. |
+| `make logs` | Follows one JSON summary line per email. |
+| `make audit` | Prints the audit log. It works whether or not AECA is running. |
+| `make approvals` | Lists the approvals the manager hasn't answered. |
+| `make check` | Lint, strict typing and the offline tests. No network, no cost. |
+
+<!-- Task 15: health check (`aeca health`, Docker's HEALTHCHECK), the copy lock and FORCE_LOCK -->
+
+### `.env`
+
+Each setting is an environment variable. A blank value means the default.
+
+| Variable | Default | What |
+|---|---|---|
+| `GMAIL_ADDRESS` | required | The AECA inbox. It must be the account the token belongs to, ignoring case and Gmail's dots. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required | The OAuth client. |
+| `GOOGLE_REFRESH_TOKEN` | required to run | The token. `make auth` writes it. |
+| `ANTHROPIC_API_KEY` | required to run | The model key. |
+| `MANAGER_ADDRESS` | the AECA account | Where approval requests, urgent notices and alerts go, and the one outside address whose replies can approve. |
+| `INTERNAL_SENDERS` | empty | Comma-separated addresses that count as internal. Empty makes every urgent sender count as internal. |
+| `BULK_SENDERS` | empty | Addresses or domains that are always bulk. They never get an automatic reply. |
+| `TIMEZONE` | the calendar's zone | Overrides the calendar's time zone. |
+| `WORK_HOURS` | `Mon-Fri 09:00-17:00` | Where alternative slots are found. |
+| `MEETING_MINUTES` | 30 | A meeting's length when the email doesn't say. |
+| `BUFFER_MINUTES` | 10 | The gap kept around events. |
+| `ALTERNATIVE_DAYS` | 5 | How many working days ahead to look for alternatives. |
+| `POLL_SECONDS` | 30 | How often the inbox is read. |
+| `SALES_DECLINE_NEEDS_APPROVAL` | false | Makes the sales decline wait for approval. |
+| `MAX_USD_PER_DAY` | 5 | The daily cost cap. |
+| `ALERT_AFTER_FAILURES` | 3 | How many emails in a row must fail before AECA alerts the manager. |
+| `DEBUG_LOG` | false | Writes `debug.log` with full email text. It is personal data, so it is off. |
+| `DEBUG_LOG_DAYS` | 7 | How long `debug.log` is kept, when it is on. |
+| `EXTRA_CA_CERTS` | empty | A path inside the container to a CA file to trust. See below. |
+| `FORCE_LOCK` | false | Starts AECA even when another copy seems to hold the lock. <!-- Task 15 --> |
+| `REHEARSAL_INTERNAL_SENDER`, `REHEARSAL_EXTERNAL_SENDER` | empty | Only for `make rehearse` (Ionel's rehearsal, not yours). |
+
+The secrets reach the container only at run time, through Compose's `env_file`. They are in no image layer, and a test checks that.
+
+### Behind a proxy that intercepts TLS
+
+`HTTPS_PROXY`, when set on your machine, is passed to the container. If the proxy re-signs TLS, AECA fails at startup naming the proxy and `EXTRA_CA_CERTS`. `EXTRA_CA_CERTS` is a path inside the container, so mount the file. Create `compose.override.yaml` next to `compose.yaml`:
+
+```yaml
+services:
+  aeca:
+    volumes:
+      - ./corporate-ca.pem:/certs/ca.pem:ro
+```
+
+Then set `EXTRA_CA_CERTS=/certs/ca.pem` in `.env` and run `make start`. Without the mount AECA exits with a configuration error, and Docker restarts it. The CA is added to the default roots, not used instead of them.
+
+## Before you start
+
+AECA needs no answers from you. Three settings are yours to choose, and what it assumes for the rest is below.
+
+**`MANAGER_ADDRESS`: who approves.**
+- Set it to your own address, and approve from your own mailbox. You never need to log in to the AECA account.
+- Leave it empty, and approval requests go to the AECA account itself. You approve from its inbox. Google may challenge a login from a new device.
+- A reply from `MANAGER_ADDRESS` counts only when Gmail's DMARC check passed for it, so its domain must publish DMARC. Gmail, Outlook and most companies do.
+
+**`INTERNAL_SENDERS`: who is internal.** It only matters for urgent email: an urgent email from an internal sender gets the manager a notice and a drafted reply. Leave it empty and every urgent sender counts as internal, so you still see that scenario. AECA logs a warning at startup when it is empty.
+
+**`TIMEZONE`.** AECA uses the calendar's own time zone, and states the zone in every approval and confirmation. Set `TIMEZONE` to override it.
+
+**What AECA assumes for the rest:**
+- **Where the 20 emails come from** doesn't matter: several mailboxes, one, or the AECA account itself.
+- **How the calendar is filled** doesn't matter: events created directly and real invitations both work. An email whose invitation is already on the calendar gets its label and no action.
+- **Language:** English only.
+- **Attachments:** their names and types are read, not their contents.
+- **Mail from one sender.** If you send all 20 from one mailbox, the never-Spam filter (below) should stop Gmail filing that sender's following mail in Spam after AECA moves a phishing email there. The first rehearsal didn't test this ([0003](docs/decisions/0003-first-send-rehearsal.md)).
+- **One email at a time,** oldest first. 27 emails took about 3 minutes in the rehearsal.
+- **Cost:** about half a cent per email with a warm cache, about 2 cents after a quiet spell. The cap is `MAX_USD_PER_DAY`.
+
+## How to approve
+
+An approval request arrives at `MANAGER_ADDRESS` as a new email, in a thread of its own, with the subject `[AECA] Approve: <action>`. It says who wrote the original email, what AECA would do, in which time zone, and the draft, if the action is a reply.
+
+Reply in that thread. Write `APPROVE` or `REJECT` as the first word, above any quoted text.
+
+- **One request covers every action it lists.** For a meeting that is the event and then its confirmation. The first answer word decides for all of them.
+- **Reading the reply.** AECA reads the first unquoted line that starts with APPROVE, APPROVED, REJECT or REJECTED. A signature or disclaimer is ignored. A reply with two different answer words is unclear, and gets one help reply.
+- **Who can approve.** A reply written in the AECA inbox, or a reply from `MANAGER_ADDRESS` whose single, well-formed `From` passed Gmail's DMARC check for its own domain. Anything else is ignored and audited with the reason. A forwarding address or mailing list that rewrites the `From` can't approve.
+- **REJECT** is logged, and nothing else happens. The email keeps its label.
+- **No model reads a reply.** Code does.
+- Approvals don't expire. The slots they hold do. If a slot fills before the answer, AECA supersedes the request and sends a new one with the next free slots.
+
+`make approvals` lists the requests still waiting.
+
+## Where the audit is
+
+`make audit` prints `audit.jsonl`, one line per processed email and one per approval outcome. A line holds the time, message and thread ids, sender and subject (bounded), the label, whether it is urgent, what decided it (a rule or the model), the actions with their status, the approval and its state, the outcome (`done`, `awaiting_approval` or `failed`), and the tokens and cost. It never holds a body.
+
+`make logs` follows the same emails as one JSON line each. The files live in the `aeca-data` volume: `audit.jsonl`, `trace.jsonl` (every model call, Google call and retry), and `debug.log` when `DEBUG_LOG` is on. API keys and tokens are redacted before anything is written.
+
+<!-- Task 15: where the debug log is and how to read it -->
+
+## What AECA leaves alone
+
+- **Gmail's Spam folder.** AECA reads the Inbox only. Mail that Gmail itself files in Spam gets no audit line. AECA does move phishing there itself.
+- **The never-Spam filter.** Without it, Gmail could file a phishing test email in Spam before AECA sees it. On a new account, create a Gmail filter that matches every message and is set to "Never send it to Spam". Ionel sets it up on the handover account, and checks it before the handover. It can't be made through the API without another OAuth scope ([decision 0033](docs/decisions/0033-spam-folder-left-alone-with-a-never-spam-filter.md)).
+- **Its own mail and approval threads.** AECA doesn't classify its own messages, or the threads of its approval requests.
+- **Threads.** Every change applies to one message, never to a thread, so archiving one email can't archive a neighbour AECA hasn't read yet.
+
+## Where AECA departs from the brief
+
+Each has a decision record. Ionel decided all but the last two.
+
+- **`UNKNOWN` is a seventh label.** A failed classification must not be guessed as one of the six. [0010](docs/decisions/0010-unknown-and-finance-labels.md)
+- **`Finance` is an added label,** for invoices and receipts. [0010](docs/decisions/0010-unknown-and-finance-labels.md)
+- **The sales decline and the acknowledgements go out without approval.** They follow the brief's own approval column. This does contradict "manager approval via email reply before any send"; `SALES_DECLINE_NEEDS_APPROVAL` turns it on for the decline. [0011](docs/decisions/0011-approval-column-and-unattended-replies.md)
+- **Mail that Gmail files in Spam gets no audit line.** [0033](docs/decisions/0033-spam-folder-left-alone-with-a-never-spam-filter.md)
+- **The model is Anthropic, not Azure OpenAI,** so you bring an Anthropic key. [0042](docs/decisions/0042-anthropic-model-and-the-evaluators-key.md)
+- **A vague meeting request gets alternatives.** A proposed window wider than 12 hours isn't a proposed time. [0058](docs/decisions/0058-vague-requests-get-alternatives.md)
+- **No MCP server** (Claude). The brief makes it optional. [0043](docs/decisions/0043-english-only-and-no-mcp-server.md)
+- **Every `MARKETING` email is archived** (Claude), known bulk sender or not, because the evaluators' emails will come from ordinary mailboxes. [0020](docs/decisions/0020-marketing-is-always-archived.md)
+
+## Known limits
+
+AECA sends the inbox's contents to Anthropic. It reads its secrets from `.env`. It polls. It serves one inbox per copy. A state volume wiped between an event and its confirmation leaves the confirmation unsent. The full list, with what each costs, is in [docs/limitations.md](docs/limitations.md).
+
+## Tests and the rest of the docs
+
+`make check` runs lint, strict typing and the offline suite. `make eval` and `make rehearse` use the network and cost money, so they stay out of `make check`. `make eval` decides every email of a 35-email corpus for real and reports accuracy per label: 100% on every label at the last run, for about $0.20. The runs are recorded in [0002](docs/decisions/0002-first-live-run.md) and [0003](docs/decisions/0003-first-send-rehearsal.md).
+
+<!-- Task 17: make reset-test, and the rehearsal's cleanup -->
+
+| Page | What |
+|---|---|
+| [DESIGN.md](DESIGN.md) | Two pages: the flow, the defences, the limits, future ideas |
+| [AGENTS.md](AGENTS.md) | The entry point for anyone, human or agent, working on the repo |
+| [docs/architecture.md](docs/architecture.md) | Layers, modules, the per-email flow, the approval loop, exactly-once |
+| [docs/glossary.md](docs/glossary.md) | Terms |
+| [docs/limitations.md](docs/limitations.md) | What AECA doesn't do, and what it costs |
+| [docs/decisions/](docs/decisions/README.md) | One record per decision, with what was rejected |
+| [docs/guides/saturday.md](docs/guides/saturday.md), [docs/guides/sunday.md](docs/guides/sunday.md) | What was built and run each day |

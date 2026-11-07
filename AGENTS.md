@@ -9,9 +9,33 @@ AECA, the Agentic Email & Calendar Assistant, watches one Gmail inbox. It labels
 3. **Background:** `/Users/ionel/work/personal/telekom/AGENT_GUIDE.md`, on the patterns carried over from ARDE.
 4. **ARDE's code:** `/Users/ionel/work/personal/emag/arde`, for the files the plan says to port. Read it; never change it.
 
+## The wiki
+
+Start here, then follow the link for what you need.
+
+| Page | What |
+|---|---|
+| [README.md](README.md) | How an evaluator runs AECA, with `make` only |
+| [DESIGN.md](DESIGN.md) | The flow, the defences, the limits, future ideas |
+| [docs/architecture.md](docs/architecture.md) | Layers, modules, the per-email flow, approvals, exactly-once |
+| [docs/glossary.md](docs/glossary.md) | Terms |
+| [docs/limitations.md](docs/limitations.md) | What AECA doesn't do |
+| [docs/decisions/](docs/decisions/README.md) | One record per decision, with who decided and what was rejected |
+| [docs/guides/saturday.md](docs/guides/saturday.md), [docs/guides/sunday.md](docs/guides/sunday.md) | What was built and run each day |
+
+After each feature, remove any line it made false. `tests/test_docs_links.py` fails when a relative link breaks.
+
+## Commands
+
+`make check` is what CI runs: ruff, `ruff format --check`, `mypy --strict src`, and `pytest -m "not live and not eval"`. Keep `-m "not live and not eval"` on every pytest run. `make auth`, `make start`, `make eval`, `make rehearse` and anything with `docker compose` touch Google, Anthropic or Docker: run them only when Ionel has asked.
+
 ## Rules
 
-- **Secrets.** Never read, print, copy, source, mount or bind `.env`. The one exception is the plan's `auth` Compose service. Never commit a secret, and tell every subagent these rules.
+- **Secrets.**
+  - Never read, print, copy, source, mount or bind `.env`. The one exception is the plan's `auth` Compose service.
+  - Check whether a setting is set with `scripts/preflight.sh`, which never reads a value out.
+  - Never put a key, a token or an email body in a commit, a log, a trace, the audit or an image layer.
+  - Tell every subagent these rules.
 - **Git:**
   - stage files by path, never with `git add .` or `-A`;
   - one commit per task, ending with the session's attribution lines;
@@ -33,7 +57,7 @@ AECA, the Agentic Email & Calendar Assistant, watches one Gmail inbox. It labels
 | After Task 1 | Run `make auth` (`! make auth` in a session) |
 | Task 2 | Send one email from Proton, and reply APPROVE from the AECA inbox and from Proton |
 | Task 8 | Send one email for the first live run |
-| Task 12 | Check the corpus's expected answers; create the two sender accounts with app passwords; set `INTERNAL_SENDERS` and `MANAGER_ADDRESS` |
+| Task 12 | Check the corpus's expected answers; set `INTERNAL_SENDERS`, `MANAGER_ADDRESS` and the two `REHEARSAL_*_SENDER` addresses (Mail.app, [0057](docs/decisions/0057-rehearsal-through-mail-app.md)) |
 | Tasks 13 and 17 | Approve and reject during the rehearsals |
 | Task 18 | The handover checklist |
 
@@ -44,4 +68,4 @@ Publishing to "In production" needs a homepage and a privacy-policy link on the 
 - the privacy policy is a public Gist of `PRIVACY.md`;
 - `github.com` is an authorized domain.
 
-If it stays in Testing mode, the token expires 7 days after consent. Ionel then runs `make auth` again just before the handover.
+The consent screen is "In production" (Ionel), so the token doesn't expire after 7 days. If a copy's own screen is in Testing mode, the token expires 7 days after consent, and `make auth` runs again.

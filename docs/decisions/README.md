@@ -1,6 +1,6 @@
 # Decision records
 
-One record per decision in the spec, and per deviation the plan made on 2026-11-07. Each says who decided, why, what was rejected and what it costs. Records 0001 to 0004 are run records, written elsewhere. Each line below gives the record's "Who decided" in full. A plan deviation with no mark is Claude's, because Claude wrote the plan and Ionel approved it on 2026-11-07.
+One record per decision in the spec, per deviation the plan made on 2026-11-07, and per decision made during the build. Each says who decided, why, what was rejected and what it costs. Records 0001 to 0003 are run records: [0001, the day-1 spikes](0001-day1-spikes.md), [0002, the first live run](0002-first-live-run.md) and [0003, the first `send` rehearsal](0003-first-send-rehearsal.md). Each line below gives the record's "Who decided" in full. A plan deviation with no mark is Claude's, because Claude wrote the plan and Ionel approved it on 2026-11-07.
 
 - [0010: UNKNOWN and Finance join the brief's six labels](0010-unknown-and-finance-labels.md), Ionel
 - [0011: The brief's approval column rules; some replies go out unapproved](0011-approval-column-and-unattended-replies.md), Ionel
@@ -41,7 +41,7 @@ One record per decision in the spec, and per deviation the plan made on 2026-11-
 - [0046: The rehearsal sends real mail, on the handover account](0046-rehearse-with-real-mail-on-the-handover-account.md), Ionel; Ionel after review for sending real mail; Claude for the reset limits and for `MANAGER_ADDRESS`
 - [0047: The test corpus: a generator agent, replaced by Claude writing it](0047-corpus-by-one-agent-then-by-claude.md), Ionel for the generator, with Claude after review for running it once, then Ionel for dropping it
 - [0048: No insert mode and no scorer](0048-no-insert-mode-and-no-scorer.md), Ionel
-- [0049: The rehearsal sends over SMTP with app passwords](0049-the-rehearsal-sends-over-smtp.md), Claude
+- [0049: The rehearsal sends over SMTP with app passwords](0049-the-rehearsal-sends-over-smtp.md), Claude. Superseded by 0057
 - [0050: The onboarding page is written once, at the end](0050-the-onboarding-page-is-written-once.md), Ionel
 - [0051: make auth mounts .env into a one-off container](0051-make-auth-mounts-env-into-a-one-off-container.md), Claude, in the plan Ionel approved on 2026-11-07
 - [0052: The spike script has no tests](0052-the-spike-script-has-no-tests.md), Claude, in the plan Ionel approved on 2026-11-07
@@ -49,3 +49,5 @@ One record per decision in the spec, and per deviation the plan made on 2026-11-
 - [0054: If the days slip, cut in a fixed order](0054-if-the-days-slip-cut-in-this-order.md), Ionel for the order and the four days; Claude for putting production readiness on the never-cut list
 - [0055: Approvals don't expire, but their holds do](0055-approvals-do-not-expire-but-holds-do.md), Claude
 - [0056: Where the production items land in the four days](0056-where-the-production-items-land.md), Claude
+- [0057: The rehearsal sends through Mail.app, from two addresses it already has](0057-rehearsal-through-mail-app.md), Ionel. Supersedes 0049
+- [0058: A vague meeting request gets alternatives, not a booked time](0058-vague-requests-get-alternatives.md), Ionel
