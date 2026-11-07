@@ -117,3 +117,19 @@ def test_summary_is_one_line_with_outcome_label_and_subject() -> None:
 @pytest.mark.parametrize("outcome", ["done", "awaiting_approval", "failed", "skipped"])
 def test_summary_names_every_outcome(outcome: str) -> None:
     assert outcome in summary(line_of(outcome=outcome))
+
+
+def test_a_unicode_line_separator_in_a_subject_cannot_split_an_audit_line(tmp_path: Path) -> None:
+    audit = audit_in(tmp_path)
+
+    audit.write(line_of(subject="a" + chr(0x2028) + "b" + chr(0x85) + "c"))
+    audit.write(line_of(message_id="m2"))
+
+    assert len((tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_summary_strips_terminal_escapes_and_bounds_the_subject() -> None:
+    text = summary(line_of(subject="\x1b[31mred\x1b[0m" + "x" * 500))
+
+    assert "\x1b" not in text
+    assert len(text.split(" ", 5)[5]) <= 200

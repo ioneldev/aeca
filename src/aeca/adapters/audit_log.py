@@ -23,7 +23,9 @@ class JsonlAuditLog:
         assert isinstance(record, dict)
         for field in _BOUNDED_FIELDS:
             record[field] = _bounded(record[field])
-        self._file.append_line(json.dumps(record, ensure_ascii=False, allow_nan=False))
+        # ensure_ascii, because a subject is attacker-controlled and U+2028 or U+0085 would split
+        # one audit line in two for any reader that uses splitlines().
+        self._file.append_line(json.dumps(record, ensure_ascii=True, allow_nan=False))
 
 
 # Cut after redaction, because a secret cut in half no longer matches and its head would leak.
