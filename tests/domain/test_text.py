@@ -95,21 +95,33 @@ def test_without_a_blockquote_it_reads_as_html_to_text():
     assert html_to_text_with_quotes(html) == html_to_text(html)
 
 
-# Review minor: the reducer must stay linear. Two megabytes in 140,000 small pieces on one line take
-# a linear reducer about half a second, and the quadratic one it replaced about 3.5 s (measured).
+# Review minor: the reducer must stay linear. Measured by how the time grows from N to 4N pieces on
+# one line, not by a wall-clock bound, so a loaded machine cannot fail it: linear growth gives about
+# 4, the quadratic reducer it replaced about 12 at this size (measured). Both runs together take
+# about a quarter of a second.
 
-TWO_MEGABYTES_OF_SMALL_PIECES = ("<b>" + "w" * 20 + "</b> ") * 70_000
-LINEAR_BOUND_SECONDS = 1.5
+PIECE = "<b>" + "w" * 100 + "</b> "
+PIECES = 6_000
+LINEAR_GROWTH_LIMIT = 8.0
+
+
+def best_time_to_reduce(html: str) -> float:
+    timings = []
+    for _ in range(3):
+        started = time.perf_counter()
+        html_to_text(html)
+        timings.append(time.perf_counter() - started)
+    return min(timings)
+
+
+def growth_from_n_to_4n() -> float:
+    return best_time_to_reduce(PIECE * (4 * PIECES)) / best_time_to_reduce(PIECE * PIECES)
 
 
 def test_a_large_html_body_reduces_in_linear_time():
-    started = time.perf_counter()
-    plain = html_to_text(TWO_MEGABYTES_OF_SMALL_PIECES)
-    elapsed = time.perf_counter() - started
+    growth = growth_from_n_to_4n()
 
-    assert len(TWO_MEGABYTES_OF_SMALL_PIECES) > 1_900_000
-    assert len(plain) == 21 * 70_000 - 1
-    assert elapsed < LINEAR_BOUND_SECONDS, f"{elapsed:.2f}s"
+    assert growth < LINEAR_GROWTH_LIMIT, f"the time grew {growth:.1f}x from N to 4N pieces"
 
 
 def test_the_quoting_reducer_joins_its_lines_the_same_way():
