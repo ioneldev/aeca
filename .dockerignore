@@ -1,0 +1,18 @@
+# The secrets stay on the host: compose hands .env to the container at run time, and no build step
+# may see it.
+.env
+.env.*
+!.env.example
+client_secret*.json
+
+.git
+.venv
+.superpowers
+.worktrees
+data
+*.log
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.DS_Store
