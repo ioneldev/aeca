@@ -92,13 +92,41 @@ def test_the_event_goes_in_under_its_own_id() -> None:
     assert call["body"]["id"] == "aecaseed0abc"
 
 
-def test_google_refusing_a_duplicate_id_means_the_event_is_already_seeded() -> None:
+def test_google_refusing_a_duplicate_id_of_a_live_event_means_it_is_already_seeded() -> None:
     stub = GoogleStub()
     stub.reply("events.insert", http_error(409))
+    stub.reply("events.get", {"id": "aecaseed0abc", "status": "confirmed"})
 
     inserted = GoogleSeedCalendar(stub, ACCOUNT).insert(timed())
 
     assert inserted == SeedInsert(event_id="aecaseed0abc", created=False)
+    assert "events.update" not in stub.paths_called()
+
+
+def test_a_duplicate_id_of_a_cancelled_event_is_brought_back_with_the_seed_body() -> None:
+    stub = GoogleStub()
+    stub.reply("events.insert", http_error(409))
+    stub.reply("events.get", {"id": "aecaseed0abc", "status": "cancelled"})
+    stub.reply("events.update", {"id": "aecaseed0abc", "status": "tentative"})
+
+    inserted = GoogleSeedCalendar(stub, ACCOUNT).insert(timed(status="tentative"))
+
+    [update] = stub.calls_to("events.update")
+    [insert] = stub.calls_to("events.insert")
+    assert inserted == SeedInsert(event_id="aecaseed0abc", created=True)
+    assert update["eventId"] == "aecaseed0abc" and update["sendUpdates"] == "none"
+    assert update["body"] == insert["body"]
+    assert update["body"]["status"] == "tentative"
+
+
+def test_a_failure_to_bring_a_cancelled_event_back_raises() -> None:
+    stub = GoogleStub()
+    stub.reply("events.insert", http_error(409))
+    stub.reply("events.get", {"id": "aecaseed0abc", "status": "cancelled"})
+    stub.reply("events.update", http_error(500))
+
+    with pytest.raises(AecaError):
+        GoogleSeedCalendar(stub, ACCOUNT).insert(timed())
 
 
 def test_any_other_google_failure_still_raises() -> None:
@@ -112,6 +140,7 @@ def test_any_other_google_failure_still_raises() -> None:
 def test_a_second_run_against_google_creates_nothing() -> None:
     stub = GoogleStub()
     stub.reply("events.insert", {"id": "aecaseed0abc"}, http_error(409))
+    stub.reply("events.get", {"id": "aecaseed0abc", "status": "confirmed"})
     calendar = GoogleSeedCalendar(stub, ACCOUNT)
 
     first, second = calendar.insert(timed()), calendar.insert(timed())

@@ -51,13 +51,7 @@ class GmailMailbox:
 
     def get(self, message_id: str) -> RawEmail:
         reply = execute(self._messages.get(userId=USER, id=message_id, format="raw"))
-        return RawEmail(
-            message_id=message_id,
-            thread_id=str(reply["threadId"]),
-            label_ids=frozenset(reply.get("labelIds", [])),
-            rfc822=_decode_base64url(str(reply["raw"])),
-            internal_date=_from_epoch_millis(str(reply["internalDate"])),
-        )
+        return raw_email_from_reply(message_id, reply)
 
     def thread_summaries(self, thread_id: str) -> list[MessageSummary]:
         thread = execute(
@@ -186,6 +180,17 @@ class GmailMailbox:
         # Quoted-printable keeps every line 7-bit, which any relay accepts.
         mime.set_content(message.body, charset="utf-8", cte="quoted-printable")
         return mime
+
+
+def raw_email_from_reply(message_id: str, reply: dict[str, Any]) -> RawEmail:
+    """A messages.get reply read with format=raw."""
+    return RawEmail(
+        message_id=message_id,
+        thread_id=str(reply["threadId"]),
+        label_ids=frozenset(reply.get("labelIds", [])),
+        rfc822=_decode_base64url(str(reply["raw"])),
+        internal_date=_from_epoch_millis(str(reply["internalDate"])),
+    )
 
 
 def _one_line(value: str) -> str:

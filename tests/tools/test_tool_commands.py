@@ -39,7 +39,7 @@ def test_eval_with_an_unreadable_corpus_says_so(
     assert "nope.json" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("command", ["eval", "seed-calendar", "rehearse"])
+@pytest.mark.parametrize("command", ["eval", "seed-calendar", "rehearse", "reset-test"])
 def test_each_tool_command_is_registered(command: str, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as raised:
         cli.main([command, "--help"])
@@ -97,7 +97,7 @@ def test_eval_without_a_data_dir_writes_under_the_local_data_folder_and_never_to
     assert Path("/data") not in made and not any(str(path).startswith("/data") for path in made)
 
 
-@pytest.mark.parametrize("target", ["eval", "seed-calendar", "rehearse"])
+@pytest.mark.parametrize("target", ["eval", "seed-calendar", "rehearse", "reset-test"])
 def test_the_host_run_make_targets_set_the_local_data_dir(target: str) -> None:
     dry_run = subprocess.run(
         ["make", "-n", target], cwd=REPO, capture_output=True, text=True, check=True
@@ -133,3 +133,15 @@ def test_rehearse_says_which_address_plays_which_role_before_sending(
 class _RefusingRunner:
     def run(self, script: str, arguments: object = ()) -> str:
         raise AssertionError("a test must never run osascript")
+
+
+def test_the_reset_test_make_target_passes_its_arguments_through() -> None:
+    dry_run = subprocess.run(
+        ["make", "-n", "reset-test", "ARGS=--yes"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    assert "AECA_DATA_DIR=data uv run --env-file .env aeca reset-test --yes" in dry_run

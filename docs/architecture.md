@@ -87,4 +87,4 @@ Why the order: [0031](decisions/0031-every-action-goes-through-one-journal.md), 
 
 ## The commands
 
-`aeca auth`, `run`, `audit`, `approvals`, `eval`, `seed-calendar` and `rehearse`, in `cli.py` and `tools/tool_commands.py`. The `make` targets call them; `make preflight` is `scripts/preflight.sh`.
+`aeca auth`, `run`, `audit`, `approvals`, `eval`, `seed-calendar`, `rehearse` and `reset-test`, in `cli.py` and `tools/tool_commands.py`. The `make` targets call them; `make preflight` is `scripts/preflight.sh`.

@@ -14,6 +14,7 @@ from aeca.adapters.gmail import GmailMailbox
 from aeca.adapters.gmail_lease import GmailLease
 from aeca.adapters.google_auth import credentials_from_settings
 from aeca.adapters.google_calendar import GoogleCalendar
+from aeca.adapters.google_reset import GmailResetMailbox, GoogleResetCalendar
 from aeca.adapters.google_seed_calendar import GoogleSeedCalendar
 from aeca.domain.errors import ConfigError
 from aeca.settings import Settings
@@ -27,6 +28,8 @@ class GoogleServices:
     lease: GmailLease
     calendar: GoogleCalendar
     seed_calendar: GoogleSeedCalendar
+    reset_mailbox: GmailResetMailbox
+    reset_calendar: GoogleResetCalendar
 
 
 def build_google_services(settings: Settings) -> GoogleServices:
@@ -39,6 +42,8 @@ def build_google_services(settings: Settings) -> GoogleServices:
         lease=GmailLease(gmail_service),
         calendar=GoogleCalendar(calendar_service),
         seed_calendar=GoogleSeedCalendar(calendar_service, settings.gmail_address),
+        reset_mailbox=GmailResetMailbox(gmail_service),
+        reset_calendar=GoogleResetCalendar(calendar_service),
     )
 
 
