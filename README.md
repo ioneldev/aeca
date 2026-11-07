@@ -15,7 +15,7 @@ It is Ionel Cîmpan's take-home for Telekom's Senior Developer Python LLM role. 
 | `MARKETING` | Archives; may acknowledge | No |
 | `SPAM` | Moves to Gmail's Spam folder, never replies | No |
 | `UNKNOWN` | The label only. The email couldn't be classified. | No |
-| `URGENT` (added to any of the above) | Stars it. From an internal sender, the approval request carries the urgent notice and a reply drafted to the sender. A separate notice goes to the manager only when there is no draft to approve. | The drafted reply waits for approval |
+| `URGENT` (added to any of the above) | Stars it. From an internal sender, the approval request carries the urgent notice and a reply drafted to the sender; for a meeting request, the meeting reply is the only reply ([0059](docs/decisions/0059-an-urgent-meeting-gets-one-reply.md)). A separate notice goes to the manager only when no approval carries it. | The drafted reply waits for approval |
 
 Every email also gets `AECA/processed` when AECA is done with it, `AECA/awaiting` while an approval is open, and `AECA/error` if it failed.
 

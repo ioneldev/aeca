@@ -51,3 +51,5 @@ One record per decision in the spec, per deviation the plan made on 2026-11-07, 
 - [0056: Where the production items land in the four days](0056-where-the-production-items-land.md), Claude
 - [0057: The rehearsal sends through Mail.app, from two addresses it already has](0057-rehearsal-through-mail-app.md), Ionel. Supersedes 0049
 - [0058: A vague meeting request gets alternatives, not a booked time](0058-vague-requests-get-alternatives.md), Ionel decided that a vague request gets alternatives (2026-11-07), and Claude chose the 12-hour limit that implements it
+- [0059: An urgent meeting request gets one reply, the meeting reply](0059-an-urgent-meeting-gets-one-reply.md), Ionel found the problem, and Claude chose the fix. Changes 0016 in part
+- [0060: The urgent draft goes out as the manager read it](0060-the-urgent-draft-goes-out-as-written.md), Ionel found the problem, and Claude chose the fix. Changes 0022 in part

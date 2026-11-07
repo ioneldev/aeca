@@ -1,5 +1,7 @@
 # 0022: The model writes one reply only: the urgent draft
 
+**Changed in part by [0059](0059-an-urgent-meeting-gets-one-reply.md) and [0060](0060-the-urgent-draft-goes-out-as-written.md)** (2026-11-07): a meeting request gets no urgent draft, and the draft goes out word for word, with no template greeting or sign-off. What follows is kept as it was written.
+
 **Who decided:** Claude, after review. 2026-11-05.
 
 **Decision.**

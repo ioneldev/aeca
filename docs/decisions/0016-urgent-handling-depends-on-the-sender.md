@@ -1,5 +1,7 @@
 # 0016: An urgent email is handled by who sent it
 
+**Changed in part by [0059](0059-an-urgent-meeting-gets-one-reply.md)** (2026-11-07): an urgent meeting request gets the meeting reply only, with no drafted reply beside it. What follows is kept as it was written.
+
 **Who decided:** Ionel. 2026-11-05.
 
 **Decision.**
