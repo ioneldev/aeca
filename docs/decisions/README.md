@@ -1,0 +1,51 @@
+# Decision records
+
+One record per decision in the spec, and per deviation the plan made on 2026-11-07. Each says who decided, why, what was rejected and what it costs. Records 0001 to 0004 are run records, written elsewhere. Each line below gives the record's "Who decided" in full. A plan deviation with no mark is Claude's, because Claude wrote the plan and Ionel approved it on 2026-11-07.
+
+- [0010: UNKNOWN and Finance join the brief's six labels](0010-unknown-and-finance-labels.md), Ionel
+- [0011: The brief's approval column rules; some replies go out unapproved](0011-approval-column-and-unattended-replies.md), Ionel
+- [0012: One approval covers the event and its confirmation; the event has no attendees](0012-event-and-confirmation-share-one-approval.md), Ionel for the single approval, the confirmation and the missing attendees; Claude for the template text
+- [0013: When no proposed time is free, the manager approves a reply with alternatives](0013-no-free-slot-drafts-alternatives.md), Claude
+- [0014: A real invitation already on the calendar needs no action](0014-invitations-already-on-calendar-need-no-action.md), Claude, after review
+- [0015: An UNKNOWN email gets the label and nothing else](0015-unknown-gets-the-label-only.md), Ionel for no approval; Claude for no notification
+- [0016: An urgent email is handled by who sent it](0016-urgent-handling-depends-on-the-sender.md), Ionel
+- [0017: While INTERNAL_SENDERS is empty, every urgent sender counts as internal](0017-empty-internal-senders-means-everyone-is-internal.md), Ionel, after review
+- [0018: A From whose DMARC check failed is never internal](0018-failed-dmarc-never-counts-as-internal.md), Claude
+- [0019: What counts as urgent](0019-what-counts-as-urgent.md), Claude; Ionel can overturn it
+- [0020: Every MARKETING email is archived](0020-marketing-is-always-archived.md), Claude; Ionel for the `BULK_SENDERS` list
+- [0021: The policy is data: one record per label](0021-policy-is-data.md), Claude, from Ionel's future idea
+- [0022: The model writes one reply only: the urgent draft](0022-the-model-writes-only-the-urgent-draft.md), Claude, after review
+- [0023: Code limits who gets an automatic reply](0023-limits-on-automatic-replies.md), Claude
+- [0024: The planner reads events, not free/busy](0024-plan-the-slot-from-events-not-free-busy.md), Claude, after review
+- [0025: Holds keep two requesters apart, and one email is handled at a time](0025-holds-keep-two-requesters-apart.md), Claude, after review for holds; Claude for one at a time
+- [0026: An event is created once, from an id derived from the email](0026-event-is-created-once-from-a-derived-id.md), Claude, after review
+- [0027: Approval ids and AECA's headers survive a lost state store](0027-approval-ids-and-headers-need-no-state-store.md), Claude, after review
+- [0028: MANAGER_ADDRESS: approvals can go to the evaluators' own mailbox](0028-manager-address-setting.md), Ionel, after review
+- [0029: Which reply counts as an approval](0029-which-reply-counts-as-an-approval.md), Claude for the `SENT` check; Ionel, after review, for the DMARC check
+- [0030: REJECT only logs](0030-reject-does-nothing.md), Ionel
+- [0031: Every action goes through one journal, and sends go through drafts](0031-every-action-goes-through-one-journal.md), Claude, after review
+- [0032: AECA skips its own mail and approval threads](0032-skip-own-mail-and-approval-threads.md), Claude
+- [0033: Gmail's Spam folder is left alone, and a filter keeps mail out of it](0033-spam-folder-left-alone-with-a-never-spam-filter.md), Ionel; the filter after review; Claude for creating it by hand
+- [0034: A few named rules decide before the model does](0034-a-few-rules-decide-alone.md), Claude
+- [0035: The validator drops a bad field, not the whole decision](0035-the-validator-works-field-by-field.md), Claude, after review; Claude for the urgent-quote check
+- [0036: System-wide errors end the tick; email errors stay with the email](0036-two-kinds-of-error.md), Claude, after review
+- [0037: The image is built locally and not published](0037-image-is-built-locally-and-not-published.md), Claude
+- [0038: Production ready is a requirement](0038-production-ready-is-a-requirement.md), Ionel for the requirement and the list; Claude for the mechanisms
+- [0039: The one-copy lock is a courtesy, not the guarantee](0039-the-lock-is-a-courtesy.md), Claude, after review
+- [0040: The schema carries a version, and an upgrade never drops an approval](0040-schema-version-and-safe-upgrades.md), Claude, after review
+- [0041: Four production limits are named, not built](0041-limits-named-not-built.md), Ionel
+- [0042: The model is Anthropic, and the evaluators bring the key](0042-anthropic-model-and-the-evaluators-key.md), Ionel
+- [0043: English only, and no MCP server](0043-english-only-and-no-mcp-server.md), Ionel for English only; Claude for no MCP server
+- [0044: A dedicated Gmail account, two sender accounts, four days](0044-dedicated-accounts-and-a-four-day-build.md), Ionel
+- [0045: No questions are sent to the evaluators](0045-no-questions-for-the-evaluators.md), Ionel
+- [0046: The rehearsal sends real mail, on the handover account](0046-rehearse-with-real-mail-on-the-handover-account.md), Ionel; Ionel after review for sending real mail; Claude for the reset limits and for `MANAGER_ADDRESS`
+- [0047: The test corpus: a generator agent, replaced by Claude writing it](0047-corpus-by-one-agent-then-by-claude.md), Ionel for the generator, with Claude after review for running it once, then Ionel for dropping it
+- [0048: No insert mode and no scorer](0048-no-insert-mode-and-no-scorer.md), Ionel
+- [0049: The rehearsal sends over SMTP with app passwords](0049-the-rehearsal-sends-over-smtp.md), Claude
+- [0050: The onboarding page is written once, at the end](0050-the-onboarding-page-is-written-once.md), Ionel
+- [0051: make auth mounts .env into a one-off container](0051-make-auth-mounts-env-into-a-one-off-container.md), Claude, in the plan Ionel approved on 2026-11-07
+- [0052: The spike script has no tests](0052-the-spike-script-has-no-tests.md), Claude, in the plan Ionel approved on 2026-11-07
+- [0053: The per-email processing path grows across two tasks](0053-the-processing-path-is-replaced-not-kept.md), Claude, in the plan Ionel approved on 2026-11-07
+- [0054: If the days slip, cut in a fixed order](0054-if-the-days-slip-cut-in-this-order.md), Ionel for the order and the four days; Claude for putting production readiness on the never-cut list
+- [0055: Approvals don't expire, but their holds do](0055-approvals-do-not-expire-but-holds-do.md), Claude
+- [0056: Where the production items land in the four days](0056-where-the-production-items-land.md), Claude
