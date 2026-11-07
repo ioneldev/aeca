@@ -345,3 +345,21 @@ def test_a_call_that_overshoots_the_cap_alerts_when_the_cap_is_hit(rig: Rig) -> 
     rig.inbox()
     rig.service.tick()
     assert len(rig.alerts_sent()) == 1
+
+
+def test_a_paid_email_before_a_refusal_in_the_same_tick_does_not_close_the_incident(
+    tmp_path: Path,
+) -> None:
+    rig = Rig(tmp_path, fail_alerts=True)
+    assert isinstance(rig.incidents, RecordingIncidents)
+    rig.processor.script["paid"] = replace(line_for("paid"), usd=Decimal("0.01"))
+    rig.processor.script["refused"] = ProviderError(
+        "refused", next_action="k", kind="key_refused", system_wide=True
+    )
+    rig.inbox("paid", "refused")
+    rig.service.tick()
+
+    rig.inbox()
+    rig.service.tick()
+
+    assert IncidentKind.KEY_REFUSED not in rig.incidents.cleared

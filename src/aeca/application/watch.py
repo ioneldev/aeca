@@ -49,6 +49,8 @@ class FailureWatch:
         self._deps.incidents.clear(IncidentKind.FAILURES_IN_A_ROW)
 
     def tick_ended_by(self, error: Exception) -> None:
+        # An answer from before the failure proves nothing about the key now.
+        self._model_answered = False
         if isinstance(error, BudgetExhausted):
             self._report(IncidentKind.COST_CAP, describe(error))
         elif isinstance(error, ProviderError) and error.kind in KEY_REFUSED_KINDS:
