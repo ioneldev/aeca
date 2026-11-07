@@ -8,7 +8,7 @@
 - If creating the event fails, no confirmation goes out.
 - The event has no attendees, so Google sends no invitation.
 
-**Why.** The spec gives no further reason for the single approval or for dropping attendees. The template is Claude's call and fits the rule that no model-written text leaves without a human seeing it (see 0022).
+**Why.** The spec gives no further reason for the single approval or for dropping attendees. The spec gives none for the template either.
 
 **Rejected.**
 - Two approvals, one per action (inferred).

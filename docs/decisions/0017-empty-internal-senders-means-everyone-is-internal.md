@@ -6,7 +6,6 @@
 - With `INTERNAL_SENDERS` empty, an urgent email from anyone gets the internal treatment: the notice, and a draft waiting for approval.
 - AECA logs a warning at startup when the list is empty.
 - The reply rules still apply, so an automated sender gets the notice but no draft.
-- This is a separate record from 0016 because it came from the review, and it is a fallback for a setting, not part of the table's base rule.
 
 **Why.** Evaluators who forget the setting still see the brief's urgent-internal scenario.
 

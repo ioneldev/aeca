@@ -6,7 +6,7 @@
 - On 2026-11-05: a separate agent writes a corpus of about 30 emails that replicates the evaluators' test. It runs once, never sees AECA's prompt, and uses a different model from the decision call. The committed corpus is what matters.
 - On 2026-11-07: there is no generator agent. Claude writes the corpus, and Ionel checks the expected answers once.
 
-**Why.** The corpus should not share AECA's own assumptions. It is a script run once because the committed corpus matters, not a tool to maintain. The 2026-11-07 change gives no further reason in the plan.
+**Why.** The spec says the generator is a script run once, "because the committed corpus is what matters", and that it never sees AECA's prompt. It gives no further reason. The 2026-11-07 change gives none either.
 
 **Rejected.**
 - A generator that is maintained as a tool (the spec names this as rejected).

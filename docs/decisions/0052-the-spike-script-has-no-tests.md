@@ -1,6 +1,6 @@
 # 0052: The spike script has no tests
 
-**Who decided:** [NEEDS CLARIFICATION: the plan marks this neither Ionel's nor Claude's]. 2026-11-07.
+**Who decided:** Claude, in the plan Ionel approved on 2026-11-07.
 
 **Decision.**
 The spike script in `docs/research/spikes/` has no tests and is excluded from ruff and mypy.

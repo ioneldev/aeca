@@ -9,10 +9,11 @@
 - The model quotes the text that makes the email urgent, and the validator checks the quote.
 - The `Importance` and `X-Priority` headers reach the model as a hint only.
 
-**Why.** The brief's wording is short, and the manager's side is the one that matters. Marketers set priority headers too, so they can't decide.
+**Why.** The spec reads "deadline or escalation" from the manager's side. It keeps the priority headers as a hint only, because marketers set them too.
 
 **Rejected.**
-- Taking urgency from the sender's wording or from priority headers. Both are easy to fake.
+- Letting the priority headers decide. Marketers set them too.
+- Urgency on the sender's side, such as "Sale ends tonight!" (the spec lists it as not urgent).
 - Reading "URGENT" in a subject as enough (the spec lists it as not urgent without body support).
 
 **Cost.** The two-working-day window is a guess, tuned with `make eval`.

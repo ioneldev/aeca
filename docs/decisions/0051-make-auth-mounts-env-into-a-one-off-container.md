@@ -1,6 +1,6 @@
 # 0051: make auth mounts .env into a one-off container
 
-**Who decided:** [NEEDS CLARIFICATION: the plan marks this neither Ionel's nor Claude's]. 2026-11-07.
+**Who decided:** Claude, in the plan Ionel approved on 2026-11-07.
 
 **Decision.**
 - `make auth` bind-mounts `.env` into a one-off container, so the token can be written without being printed.
