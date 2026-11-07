@@ -10,7 +10,7 @@ from aeca.domain.approval import Hold
 from aeca.domain.calendar_event import CalendarEvent
 from aeca.domain.decision import Meeting, Window
 from aeca.domain.meeting_outcome import SlotFree
-from aeca.domain.time_range import Interval
+from aeca.domain.time_range import Interval, in_utc
 
 MAX_ALTERNATIVES = 3
 ALTERNATIVE_STEP_MINUTES = 30
@@ -39,6 +39,14 @@ class PlanSettings:
     meeting_minutes: int
     buffer_minutes: int
     alternative_days: int
+
+    def __post_init__(self) -> None:
+        if self.alternative_days < 1:
+            raise ValueError("alternative_days must be at least 1")
+        if self.meeting_minutes < 1:
+            raise ValueError("meeting_minutes must be at least 1")
+        if self.buffer_minutes < 0:
+            raise ValueError("buffer_minutes must be 0 or more")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,19 +94,17 @@ def busy_intervals(
 
 def choose_slot(request: SlotRequest) -> SlotFree | None:
     settings = request.settings
-    blocked = _with_buffer(request.busy, settings.buffer_minutes)
     for window in request.windows:
-        slot = _first_free_slot_in(window, blocked, request)
+        slot = _first_free_slot_in(window, request)
         if slot is not None:
             return SlotFree(slot=slot, outside_work_hours=not _inside_work_hours(slot, settings))
     return None
 
 
 def find_alternatives(request: AlternativesRequest) -> tuple[Interval, ...]:
-    blocked = _with_buffer(request.busy, request.settings.buffer_minutes)
     found: list[Interval] = []
     for day in _days_to_search(request):
-        slot = _earliest_free_slot_on(day, blocked, request)
+        slot = _earliest_free_slot_on(day, request)
         if slot is not None:
             found.append(slot)
         if len(found) == MAX_ALTERNATIVES:
@@ -133,12 +139,17 @@ def _parse_clock_time(text: str) -> time:
 
 def _with_buffer(busy: Sequence[Interval], buffer_minutes: int) -> tuple[Interval, ...]:
     buffer = timedelta(minutes=buffer_minutes)
-    return tuple(Interval(start=span.start - buffer, end=span.end + buffer) for span in busy)
+    return tuple(
+        Interval(
+            start=(in_utc(span.start) - buffer),
+            end=(in_utc(span.end) + buffer),
+        )
+        for span in busy
+    )
 
 
-def _first_free_slot_in(
-    window: Window, blocked: Sequence[Interval], request: SlotRequest
-) -> Interval | None:
+def _first_free_slot_in(window: Window, request: SlotRequest) -> Interval | None:
+    blocked = _with_buffer(request.busy, request.settings.buffer_minutes)
     for start in _candidate_starts(window, blocked):
         slot = _slot_starting_at(start, request.duration, request.settings.zone)
         if _fits_in_window(slot, window) and not _collides(slot, blocked):
@@ -149,8 +160,10 @@ def _first_free_slot_in(
 def _candidate_starts(window: Window, blocked: Sequence[Interval]) -> list[datetime]:
     if window.end is None:
         return [window.start]
-    ends_inside_window = [span.end for span in blocked if window.start < span.end < window.end]
-    return sorted([window.start, *ends_inside_window])
+    ends_inside_window = [
+        span.end for span in blocked if in_utc(window.start) < span.end < in_utc(window.end)
+    ]
+    return sorted([window.start, *ends_inside_window], key=in_utc)
 
 
 def _slot_starting_at(start: datetime, duration: timedelta, zone: ZoneInfo) -> Interval:
@@ -160,7 +173,7 @@ def _slot_starting_at(start: datetime, duration: timedelta, zone: ZoneInfo) -> I
 
 
 def _fits_in_window(slot: Interval, window: Window) -> bool:
-    return window.end is None or slot.end <= window.end
+    return window.end is None or in_utc(slot.end) <= in_utc(window.end)
 
 
 def _collides(slot: Interval, blocked: Sequence[Interval]) -> bool:
@@ -172,7 +185,7 @@ def _inside_work_hours(slot: Interval, settings: PlanSettings) -> bool:
     if day.weekday() not in settings.work_hours.days:
         return False
     opening, closing = _work_day_boundaries(day, settings)
-    return opening <= slot.start and slot.end <= closing
+    return in_utc(opening) <= in_utc(slot.start) and in_utc(slot.end) <= in_utc(closing)
 
 
 def _work_day_boundaries(day: date, settings: PlanSettings) -> tuple[datetime, datetime]:
@@ -203,19 +216,18 @@ def _has_working_time_left(day: date, request: AlternativesRequest) -> bool:
     if day.weekday() not in settings.work_hours.days:
         return False
     _, closing = _work_day_boundaries(day, settings)
-    return request.now < closing
+    return in_utc(request.now) < in_utc(closing)
 
 
-def _earliest_free_slot_on(
-    day: date, blocked: Sequence[Interval], request: AlternativesRequest
-) -> Interval | None:
+def _earliest_free_slot_on(day: date, request: AlternativesRequest) -> Interval | None:
     settings = request.settings
+    blocked = _with_buffer(request.busy, settings.buffer_minutes)
     opening, closing = _work_day_boundaries(day, settings)
     for start in _half_hour_starts(day, opening, closing):
-        if start <= request.now:
+        if in_utc(start) <= in_utc(request.now):
             continue
         slot = _slot_starting_at(start, request.duration, settings.zone)
-        if slot.end <= closing and not _collides(slot, blocked):
+        if in_utc(slot.end) <= in_utc(closing) and not _collides(slot, blocked):
             return slot
     return None
 

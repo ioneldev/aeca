@@ -533,3 +533,125 @@ def test_work_hours_without_days_are_refused() -> None:
 def test_work_hours_that_end_before_they_start_are_refused() -> None:
     with pytest.raises(ValueError, match="end"):
         WorkHours(days=frozenset({0}), start=time(17, 0), end=time(9, 0))
+
+
+# --- the autumn clock change, when one wall-clock hour happens twice ---
+
+CLOCK_CHANGE_DAY = datetime(2026, 10, 25, tzinfo=UTC)
+
+
+def utc_on_clock_change_day(hour: int, minute: int = 0) -> datetime:
+    return CLOCK_CHANGE_DAY.replace(hour=hour, minute=minute)
+
+
+def every_day_settings() -> PlanSettings:
+    every_day = WorkHours(days=frozenset(range(7)), start=time(9, 0), end=time(17, 0))
+    return make_settings(work_hours=every_day, buffer_minutes=0)
+
+
+@pytest.mark.parametrize(("start_minute_utc", "minutes"), [(30, 60), (45, 30), (0, 120), (50, 20)])
+def test_a_slot_that_crosses_the_clock_change_has_its_real_length(
+    start_minute_utc: int, minutes: int
+) -> None:
+    start = utc_on_clock_change_day(0, start_minute_utc)
+    request = SlotRequest(
+        windows=(window(start),),
+        busy=(),
+        duration=timedelta(minutes=minutes),
+        settings=every_day_settings(),
+    )
+
+    slot = chosen_slot(request)
+
+    assert slot.end.astimezone(UTC) - slot.start.astimezone(UTC) == timedelta(minutes=minutes)
+
+
+def test_a_window_across_the_clock_change_holds_a_one_hour_meeting() -> None:
+    request = SlotRequest(
+        windows=(window(utc_on_clock_change_day(0, 30), utc_on_clock_change_day(3, 30)),),
+        busy=(),
+        duration=timedelta(hours=1),
+        settings=every_day_settings(),
+    )
+
+    slot = chosen_slot(request)
+
+    assert slot.start.astimezone(UTC) == utc_on_clock_change_day(0, 30)
+    assert slot.end.astimezone(UTC) == utc_on_clock_change_day(1, 30)
+
+
+def test_an_event_in_the_repeated_hour_blocks_only_its_own_instants() -> None:
+    zone = ZoneInfo("Europe/Bucharest")
+    event_span = Interval(
+        start=utc_on_clock_change_day(0, 30).astimezone(zone),
+        end=utc_on_clock_change_day(1, 0).astimezone(zone),
+    )
+    request = SlotRequest(
+        windows=(window(utc_on_clock_change_day(0, 0), utc_on_clock_change_day(3, 0)),),
+        busy=(event_span,),
+        duration=HALF_AN_HOUR,
+        settings=every_day_settings(),
+    )
+
+    # Python calls an ambiguous local time unequal to its UTC twin, so compare in UTC.
+    assert chosen_slot(request).start.astimezone(UTC) == utc_on_clock_change_day(0, 0)
+
+
+def test_the_window_end_is_compared_as_an_instant_across_the_clock_change() -> None:
+    zone = ZoneInfo("Europe/Bucharest")
+    request = SlotRequest(
+        windows=(
+            window(
+                utc_on_clock_change_day(0, 30).astimezone(zone),
+                utc_on_clock_change_day(1, 0).astimezone(zone),
+            ),
+        ),
+        busy=(),
+        duration=timedelta(hours=1),
+        settings=every_day_settings(),
+    )
+
+    assert choose_slot(request) is None
+
+
+# --- settings are validated ---
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"alternative_days": 0}, {"meeting_minutes": 0}, {"buffer_minutes": -1}],
+)
+def test_nonsense_plan_settings_are_refused(overrides: dict[str, int]) -> None:
+    values = {"meeting_minutes": 30, "buffer_minutes": 10, "alternative_days": 5} | overrides
+
+    with pytest.raises(ValueError, match="must be"):
+        PlanSettings(zone=BUCHAREST, work_hours=OFFICE_HOURS, **values)
+
+
+def test_a_zero_buffer_is_a_valid_setting() -> None:
+    PlanSettings(
+        zone=BUCHAREST,
+        work_hours=OFFICE_HOURS,
+        meeting_minutes=30,
+        buffer_minutes=0,
+        alternative_days=1,
+    )
+
+
+# --- alternatives when now arrives in UTC ---
+
+
+def test_alternatives_work_when_now_is_given_in_utc() -> None:
+    nine_fifteen_local_as_utc = datetime(2026, 11, 9, 7, 15, tzinfo=UTC)
+
+    found = find_alternatives(alternatives_request(nine_fifteen_local_as_utc))
+
+    assert found[0] == interval(on_monday(9, 30), on_monday(10))
+
+
+def test_a_utc_now_just_before_local_midnight_still_means_the_local_day() -> None:
+    sunday_23_30_utc_is_monday_01_30_local = datetime(2026, 11, 8, 23, 30, tzinfo=UTC)
+
+    found = find_alternatives(alternatives_request(sunday_23_30_utc_is_monday_01_30_local))
+
+    assert found[0].start == on_monday(9)
