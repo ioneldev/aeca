@@ -1,10 +1,12 @@
 """trace.jsonl is evidence and debug.log holds email text: neither may hold a secret."""
 
 import json
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from aeca.adapters.clock import SystemClock
 from aeca.adapters.rotating_log import Rotation
@@ -110,7 +112,7 @@ def test_trace_rotates_keeping_five_files(tmp_path: Path) -> None:
     for number in range(50):
         tracer.event("step", number=number)
 
-    assert 2 <= len(list(tmp_path.glob("trace.jsonl*"))) <= 6
+    assert len(list(tmp_path.glob("trace.jsonl*"))) == 6
 
 
 def test_the_newest_events_stay_in_the_current_file_after_rotation(tmp_path: Path) -> None:
@@ -127,3 +129,48 @@ def test_the_system_clock_is_aware_and_utc() -> None:
 
     assert now.tzinfo is not None
     assert now.utcoffset() is not None and now.utcoffset().total_seconds() == 0  # type: ignore[union-attr]
+
+
+def test_a_tracer_without_a_clock_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="clock"):
+        JsonlTracer(  # type: ignore[call-arg]
+            tmp_path, secrets=(SecretStr(SECRET),), rotation=ROOMY, debug_enabled=False
+        )
+
+
+class Credentials(BaseModel):
+    token: str
+
+
+@pytest.mark.parametrize("secret", [SECRET, 'pa"ss\\word'])
+def test_a_secret_inside_a_pydantic_model_is_redacted_by_exact_match(
+    tmp_path: Path, secret: str
+) -> None:
+    tracer = JsonlTracer(
+        tmp_path,
+        secrets=(SecretStr(secret),),
+        rotation=ROOMY,
+        debug_enabled=False,
+        clock=FixedClock(),
+    )
+
+    tracer.event("auth", credentials=Credentials(token=f"bearer {secret}"))
+
+    assert secret not in (tmp_path / "trace.jsonl").read_text(encoding="utf-8")
+    assert trace_lines(tmp_path)[0]["credentials"] == {"token": f"bearer {REDACTED}"}
+
+
+def test_trace_and_debug_files_are_readable_by_their_owner_only(tmp_path: Path) -> None:
+    tmp_path.chmod(0o755)
+    tracer = tracer_in(tmp_path, rotation=Rotation(max_bytes=200, keep=2), debug_enabled=True)
+
+    for number in range(10):
+        tracer.event("step", number=number)
+        tracer.debug(f"line {number} " + "x" * 100)
+
+    modes = {
+        path.name: stat.S_IMODE(path.stat().st_mode)
+        for path in [*tmp_path.glob("trace.jsonl*"), *tmp_path.glob("debug.log*")]
+    }
+    assert {"trace.jsonl", "trace.jsonl.1", "debug.log", "debug.log.1"} <= set(modes)
+    assert set(modes.values()) == {0o600}

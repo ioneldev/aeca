@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,8 +21,12 @@ class RotatingLogFile:
         encoded = (line + "\n").encode("utf-8", errors="backslashreplace")
         if self._would_overflow(len(encoded)):
             self._rotate()
-        with self._path.open("ab") as file:
+        with os.fdopen(self._open_for_append(), "ab") as file:
             file.write(encoded)
+
+    # 0600, because these files hold email text and the directory may already exist, readable.
+    def _open_for_append(self) -> int:
+        return os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
 
     def _would_overflow(self, incoming_bytes: int) -> bool:
         if not self._path.exists():

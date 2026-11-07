@@ -3,6 +3,8 @@ import re
 from collections.abc import Mapping
 from datetime import datetime
 
+from pydantic import BaseModel
+
 from aeca.domain.secret import SecretStr
 
 REDACTED = "[REDACTED]"
@@ -22,6 +24,8 @@ class Redactor:
     def value(self, value: object) -> object:
         if isinstance(value, str):
             return self.text(value)
+        if isinstance(value, BaseModel):
+            return self.value(value.model_dump(mode="json"))
         if isinstance(value, Mapping):
             return {self.text(str(key)): self.value(item) for key, item in value.items()}
         if isinstance(value, list | tuple):

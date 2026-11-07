@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 
 
 class Verb(StrEnum):
@@ -26,6 +27,11 @@ class Action:
     verb: Verb
     key: str
     args: Mapping[str, str]
+
+    # A frozen dataclass still lets a dict inside it change, and a changed action no longer
+    # matches the key it was journalled under.
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "args", MappingProxyType(dict(self.args)))
 
 
 @dataclass(frozen=True)

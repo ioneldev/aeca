@@ -1,6 +1,8 @@
 """audit.jsonl is read by the operator: one line per email, never the body, never a secret."""
 
+import dataclasses
 import json
+import stat
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -49,15 +51,14 @@ def written_lines(tmp_path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in text.splitlines()]
 
 
-def test_audit_line_never_holds_body_text(tmp_path: Path) -> None:
-    body = "BODY-MARKER please wire the money"
-    audit = audit_in(tmp_path)
+def test_an_audit_line_has_no_field_that_could_hold_a_body(tmp_path: Path) -> None:
+    field_names = {field.name for field in dataclasses.fields(AuditLine)}
 
-    audit.write(line_of(subject="Invoice"))
+    audit_in(tmp_path).write(line_of())
 
-    assert "BODY-MARKER" not in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
-    assert body not in json.dumps(written_lines(tmp_path))
+    assert not {name for name in field_names if "body" in name}
     assert "body" not in written_lines(tmp_path)[0]
+    assert set(written_lines(tmp_path)[0]) == field_names
 
 
 def test_a_line_is_one_json_object_with_the_facts(tmp_path: Path) -> None:
@@ -104,19 +105,34 @@ def test_the_audit_rotates_keeping_five_files(tmp_path: Path) -> None:
     for number in range(40):
         audit.write(line_of(message_id=f"m{number}"))
 
-    assert len(list(tmp_path.glob("audit.jsonl*"))) <= 6
+    assert len(list(tmp_path.glob("audit.jsonl*"))) == 6
 
 
-def test_summary_is_one_line_with_outcome_label_and_subject() -> None:
-    text = summary(line_of(subject="Line one\nline two"))
+def summary_of(**overrides: object) -> dict[str, object]:
+    return json.loads(summary(line_of(**overrides)))  # type: ignore[no-any-return]
+
+
+def test_summary_is_one_json_object_with_the_facts_the_operator_scans() -> None:
+    text = summary(line_of(subject="Line one\nline two", approval_id="appr-m1"))
 
     assert "\n" not in text
-    assert "done" in text and "TASK" in text and "Line one" in text
+    assert json.loads(text) == {
+        "time": "2026-11-09T12:00:00+00:00",
+        "outcome": "done",
+        "label": "TASK",
+        "message_id": "m1",
+        "subject": "Line one line two",
+        "approval_id": "appr-m1",
+    }
+
+
+def test_summary_has_a_null_approval_id_when_there_is_none() -> None:
+    assert summary_of()["approval_id"] is None
 
 
 @pytest.mark.parametrize("outcome", ["done", "awaiting_approval", "failed", "skipped"])
 def test_summary_names_every_outcome(outcome: str) -> None:
-    assert outcome in summary(line_of(outcome=outcome))
+    assert summary_of(outcome=outcome)["outcome"] == outcome
 
 
 def test_a_unicode_line_separator_in_a_subject_cannot_split_an_audit_line(tmp_path: Path) -> None:
@@ -128,8 +144,27 @@ def test_a_unicode_line_separator_in_a_subject_cannot_split_an_audit_line(tmp_pa
     assert len((tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()) == 2
 
 
+def test_a_unicode_line_separator_in_a_subject_cannot_split_a_summary() -> None:
+    text = summary(line_of(subject="a" + chr(0x2028) + "b" + chr(0x85) + "c"))
+
+    assert len(text.splitlines()) == 1
+    assert text.isascii()
+
+
 def test_summary_strips_terminal_escapes_and_bounds_the_subject() -> None:
     text = summary(line_of(subject="\x1b[31mred\x1b[0m" + "x" * 500))
 
     assert "\x1b" not in text
-    assert len(text.split(" ", 5)[5]) <= 200
+    assert len(str(json.loads(text)["subject"])) <= 200
+
+
+def test_audit_files_are_readable_by_their_owner_only(tmp_path: Path) -> None:
+    tmp_path.chmod(0o755)
+    audit = audit_in(tmp_path, Rotation(max_bytes=400, keep=2))
+
+    for number in range(6):
+        audit.write(line_of(message_id=f"m{number}"))
+
+    modes = {path.name: stat.S_IMODE(path.stat().st_mode) for path in tmp_path.glob("audit.jsonl*")}
+    assert len(modes) == 3
+    assert set(modes.values()) == {0o600}

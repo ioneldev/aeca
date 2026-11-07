@@ -3,7 +3,7 @@
 import json
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -20,7 +20,8 @@ _SCHEMA = """
 CREATE TABLE journal (
     source_message_id TEXT PRIMARY KEY,
     decision_json TEXT NOT NULL,
-    actions_json TEXT NOT NULL
+    actions_json TEXT NOT NULL,
+    awaiting_approval_json TEXT NOT NULL
 );
 CREATE TABLE actions (
     key TEXT PRIMARY KEY,
@@ -34,6 +35,7 @@ CREATE TABLE actions (
 );
 CREATE TABLE approvals (
     id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL,
     source_message_id TEXT NOT NULL,
     source_thread_id TEXT NOT NULL,
     attempt INTEGER NOT NULL,
@@ -62,16 +64,25 @@ _ACTION_COLUMNS = "key, verb, args_json, source_message_id, approval_id, status,
 
 class SqliteState:
     def __init__(self, path: Path) -> None:
-        self._connection = sqlite3.connect(path, isolation_level=None)
+        try:
+            self._connection = sqlite3.connect(path, isolation_level=None)
+        except sqlite3.Error as error:
+            raise _unusable(path, error) from error
         self._connection.row_factory = sqlite3.Row
-        self._prepare_schema(path)
+        try:
+            self._prepare_schema(path)
+        except AecaError:
+            self._abandon_connection()
+            raise
+        except sqlite3.Error as error:
+            self._abandon_connection()
+            raise _unusable(path, error) from error
 
     def _prepare_schema(self, path: Path) -> None:
         found = self._connection.execute("PRAGMA user_version").fetchone()[0]
         if found == SCHEMA_VERSION:
             return
         if found != 0:
-            self._connection.close()
             raise AecaError(
                 f"{path} has schema version {found}, and this AECA reads version {SCHEMA_VERSION}",
                 next_action=(
@@ -79,7 +90,21 @@ class SqliteState:
                     "or move it aside to start with an empty state"
                 ),
             )
+        if self._holds_any_table():
+            raise AecaError(
+                f"{path} already holds tables but has no AECA schema version, so it is not "
+                "an AECA state file",
+                next_action=(
+                    f"Back up {path}, then remove it or point AECA_DATA_DIR at another directory"
+                ),
+            )
         self._create_schema()
+
+    def _holds_any_table(self) -> bool:
+        row = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchone()
+        return row is not None
 
     def _create_schema(self) -> None:
         # executescript commits first, so the whole creation is one explicit transaction here.
@@ -87,15 +112,26 @@ class SqliteState:
             f"BEGIN IMMEDIATE;{_SCHEMA}PRAGMA user_version = {SCHEMA_VERSION};COMMIT;"
         )
 
+    def _abandon_connection(self) -> None:
+        self._roll_back_if_open()
+        self._connection.close()
+
+    def _roll_back_if_open(self) -> None:
+        if not self._connection.in_transaction:
+            return
+        # The error that sent us here is the one worth reporting, not a second one from here.
+        with suppress(sqlite3.Error):
+            self._connection.execute("ROLLBACK")
+
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             yield self._connection
+            self._connection.execute("COMMIT")
         except BaseException:
-            self._connection.execute("ROLLBACK")
+            self._roll_back_if_open()
             raise
-        self._connection.execute("COMMIT")
 
     # journal and actions
 
@@ -109,6 +145,7 @@ class SqliteState:
             source_message_id=row["source_message_id"],
             decision_json=row["decision_json"],
             actions=_actions_from_json(row["actions_json"]),
+            awaiting_approval=_actions_from_json(row["awaiting_approval_json"]),
         )
 
     # First write wins: the journal is the decision of record, and a second decision for the same
@@ -116,8 +153,13 @@ class SqliteState:
     def journal_record(self, entry: JournalEntry) -> None:
         with self._transaction() as connection:
             inserted = connection.execute(
-                "INSERT OR IGNORE INTO journal VALUES (?, ?, ?)",
-                (entry.source_message_id, entry.decision_json, _actions_to_json(entry.actions)),
+                "INSERT OR IGNORE INTO journal VALUES (?, ?, ?, ?)",
+                (
+                    entry.source_message_id,
+                    entry.decision_json,
+                    _actions_to_json(entry.actions),
+                    _actions_to_json(entry.awaiting_approval),
+                ),
             )
             if inserted.rowcount == 1:
                 self._register_actions(entry.actions, entry.source_message_id, approval_id=None)
@@ -140,10 +182,18 @@ class SqliteState:
                     next_action="Record the action in a journal entry or an approval first",
                 )
 
+    # An action that waits for approval is never listed: a resume would run it unapproved.
     def actions_unfinished(self) -> list[ActionRecord]:
         rows = self._connection.execute(
-            f"SELECT {_ACTION_COLUMNS} FROM actions WHERE status IN (?, ?) ORDER BY sequence",
-            (ActionStatus.PENDING.value, ActionStatus.EXECUTING.value),
+            "SELECT a.key, a.verb, a.args_json, a.source_message_id, a.approval_id, a.status, a.ref"
+            " FROM actions a LEFT JOIN approvals p ON p.id = a.approval_id"
+            " WHERE a.status IN (?, ?) AND (a.approval_id IS NULL OR p.state = ?)"
+            " ORDER BY a.sequence",
+            (
+                ActionStatus.PENDING.value,
+                ActionStatus.EXECUTING.value,
+                ApprovalState.APPROVED.value,
+            ),
         ).fetchall()
         return [_action_record_from(row) for row in rows]
 
@@ -151,27 +201,47 @@ class SqliteState:
         self, actions: tuple[Action, ...], source_message_id: str, *, approval_id: str | None
     ) -> None:
         for action in actions:
-            # Ignored when the key exists, so saving an approval again never resets progress.
-            self._connection.execute(
-                "INSERT OR IGNORE INTO actions (key, sequence, verb, args_json, source_message_id,"
-                " approval_id, status, ref) VALUES (?, "
-                "(SELECT COALESCE(MAX(sequence), 0) + 1 FROM actions), ?, ?, ?, ?, ?, NULL)",
-                (
-                    action.key,
-                    action.verb.value,
-                    json.dumps(dict(action.args)),
-                    source_message_id,
-                    approval_id,
-                    ActionStatus.PENDING.value,
-                ),
-            )
+            existing = self.action_get(action.key)
+            if existing is None:
+                self._insert_action(action, source_message_id, approval_id)
+            else:
+                _require_same_registration(existing, action, approval_id)
+
+    def _insert_action(
+        self, action: Action, source_message_id: str, approval_id: str | None
+    ) -> None:
+        self._connection.execute(
+            "INSERT INTO actions (key, sequence, verb, args_json, source_message_id,"
+            " approval_id, status, ref) VALUES (?, "
+            "(SELECT COALESCE(MAX(sequence), 0) + 1 FROM actions), ?, ?, ?, ?, ?, NULL)",
+            (
+                action.key,
+                action.verb.value,
+                json.dumps(dict(action.args)),
+                source_message_id,
+                approval_id,
+                ActionStatus.PENDING.value,
+            ),
+        )
 
     # approvals
 
     def approval_save(self, approval: Approval) -> None:
         with self._transaction() as connection:
+            self._register_actions(
+                approval.actions, approval.source_message_id, approval_id=approval.id
+            )
             connection.execute(
-                "INSERT OR REPLACE INTO approvals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO approvals (id, sequence, source_message_id, source_thread_id,"
+                " attempt, actions_json, state, request_thread_id, summary, holds_json)"
+                " VALUES (?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM approvals),"
+                " ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET"
+                " source_message_id = excluded.source_message_id,"
+                " source_thread_id = excluded.source_thread_id, attempt = excluded.attempt,"
+                " actions_json = excluded.actions_json, state = excluded.state,"
+                " request_thread_id = excluded.request_thread_id, summary = excluded.summary,"
+                " holds_json = excluded.holds_json",
                 (
                     approval.id,
                     approval.source_message_id,
@@ -184,8 +254,18 @@ class SqliteState:
                     json.dumps([_interval_to_json(interval) for interval in approval.holds]),
                 ),
             )
-            self._register_actions(
-                approval.actions, approval.source_message_id, approval_id=approval.id
+            connection.execute("DELETE FROM holds WHERE approval_id = ?", (approval.id,))
+            connection.executemany(
+                "INSERT INTO holds VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        approval.source_thread_id,
+                        approval.id,
+                        interval.start.isoformat(),
+                        interval.end.isoformat(),
+                    )
+                    for interval in approval.holds
+                ],
             )
 
     def approval_get(self, approval_id: str) -> Approval | None:
@@ -202,7 +282,7 @@ class SqliteState:
 
     def approvals_awaiting(self) -> list[Approval]:
         rows = self._connection.execute(
-            "SELECT * FROM approvals WHERE state = ? ORDER BY rowid",
+            "SELECT * FROM approvals WHERE state = ? ORDER BY sequence",
             (ApprovalState.AWAITING.value,),
         ).fetchall()
         return [_approval_from(row) for row in rows]
@@ -284,6 +364,40 @@ class SqliteState:
             "SELECT usd FROM spend WHERE day = ?", (day.isoformat(),)
         ).fetchone()
         return Decimal(0) if row is None else Decimal(row["usd"])
+
+
+def _unusable(path: Path, error: sqlite3.Error) -> AecaError:
+    return AecaError(
+        f"{path} cannot be used as the AECA state: {error}",
+        next_action=(
+            f"Back up {path}, then remove it or point AECA_DATA_DIR at another directory; "
+            "if the file is fine, check that the directory is writable and the disk is not full"
+        ),
+    )
+
+
+def _require_same_registration(
+    existing: ActionRecord, action: Action, approval_id: str | None
+) -> None:
+    if existing.approval_id != approval_id:
+        raise AecaError(
+            f"action {action.key!r} is already registered"
+            f" {_describe_gate(existing.approval_id)}, and is now being registered"
+            f" {_describe_gate(approval_id)}",
+            next_action=(
+                "Fix the caller: an action that needs approval must only ever be registered"
+                " through its approval, never in a journal entry's actions"
+            ),
+        )
+    if existing.action != action:
+        raise AecaError(
+            f"action {action.key!r} is already registered with a different verb or arguments",
+            next_action="Give the new action its own key, because a key names one action forever",
+        )
+
+
+def _describe_gate(approval_id: str | None) -> str:
+    return "as automatic" if approval_id is None else f"under approval {approval_id!r}"
 
 
 def _actions_to_json(actions: tuple[Action, ...]) -> str:

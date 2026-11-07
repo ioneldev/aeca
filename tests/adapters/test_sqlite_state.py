@@ -145,9 +145,16 @@ def test_saving_an_approval_again_changes_its_state_not_its_actions_progress(
 
 
 def test_only_awaiting_approvals_are_listed(state: SqliteState) -> None:
-    state.approval_save(approval_of("a1"))
-    state.approval_save(approval_of("a2", state=ApprovalState.REJECTED, request_thread_id="r2"))
-    state.approval_save(approval_of("a3", request_thread_id="r3"))
+    state.approval_save(approval_of("a1", actions=(reply_action("k1"),)))
+    state.approval_save(
+        approval_of(
+            "a2",
+            actions=(reply_action("k2"),),
+            state=ApprovalState.REJECTED,
+            request_thread_id="r2",
+        )
+    )
+    state.approval_save(approval_of("a3", actions=(reply_action("k3"),), request_thread_id="r3"))
 
     assert [approval.id for approval in state.approvals_awaiting()] == ["a1", "a3"]
 
@@ -224,9 +231,6 @@ def test_state_survives_reopening(tmp_path: Path) -> None:
     first = SqliteState(path)
     first.journal_record(entry_of(label_action()))
     first.approval_save(approval_of())
-    first.holds_add(
-        [Hold(thread_id="t1", approval_id="appr-m1", interval=interval_starting_in(60))]
-    )
     first.attempts_increment("m1")
     first.spend_add(date(2026, 11, 9), Decimal("0.07"))
     first.incident_open("gmail_down")
@@ -273,3 +277,301 @@ def test_a_state_in_memory_works_for_tests(tmp_path: Path) -> None:
     state = SqliteState(Path(":memory:"))
 
     assert state.attempts_increment("m1") == 1
+
+
+# R16: an action that waits for approval is never run by a resume.
+
+
+def test_actions_awaiting_approval_are_stored_in_the_journal_but_not_registered(
+    state: SqliteState,
+) -> None:
+    entry = JournalEntry(
+        source_message_id="m1",
+        decision_json="{}",
+        actions=(label_action(),),
+        awaiting_approval=(reply_action(),),
+    )
+
+    state.journal_record(entry)
+
+    assert state.journal_get("m1") == entry
+    assert state.action_get("m1:label") is not None
+    assert state.action_get("m1:reply") is None
+
+
+def test_unfinished_actions_leave_out_every_approval_that_is_not_approved(
+    state: SqliteState,
+) -> None:
+    state.approval_save(approval_of("a1", actions=(reply_action("k1"),)))
+    state.approval_save(
+        approval_of("a1", actions=(reply_action("k1"),), state=ApprovalState.REJECTED)
+    )
+    state.approval_save(
+        approval_of(
+            "a2",
+            actions=(reply_action("k2"),),
+            state=ApprovalState.SUPERSEDED,
+            request_thread_id="r2",
+        )
+    )
+    state.approval_save(approval_of("a3", actions=(reply_action("k3"),), request_thread_id="r3"))
+    state.approval_save(
+        approval_of(
+            "a4", actions=(reply_action("k4"),), state=ApprovalState.FAILED, request_thread_id="r4"
+        )
+    )
+    state.approval_save(
+        approval_of(
+            "a5",
+            actions=(reply_action("k5"),),
+            state=ApprovalState.EXECUTED,
+            request_thread_id="r5",
+        )
+    )
+
+    assert state.actions_unfinished() == []
+
+
+def test_unfinished_actions_include_an_approved_approvals_pending_actions(
+    state: SqliteState,
+) -> None:
+    state.approval_save(approval_of(state=ApprovalState.APPROVED))
+    state.journal_record(entry_of(label_action("auto"), message_id="m2"))
+
+    keys = [record.action.key for record in state.actions_unfinished()]
+
+    assert keys == ["m1:reply", "auto"]
+
+
+def test_an_approved_approvals_unfinished_action_stays_listed_after_a_restart(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.db"
+    SqliteState(path).approval_save(approval_of(state=ApprovalState.APPROVED))
+
+    keys = [record.action.key for record in SqliteState(path).actions_unfinished()]
+
+    assert keys == ["m1:reply"]
+
+
+# an approval's holds
+
+
+def test_an_awaiting_approvals_holds_reach_the_holds_table(state: SqliteState) -> None:
+    first, second = interval_starting_in(60), interval_starting_in(120)
+
+    state.approval_save(approval_of(holds=(first, second)))
+
+    assert state.holds_active(NOON) == [
+        Hold(thread_id="t1", approval_id="appr-m1", interval=first),
+        Hold(thread_id="t1", approval_id="appr-m1", interval=second),
+    ]
+
+
+def test_releasing_an_approval_removes_the_holds_it_saved(state: SqliteState) -> None:
+    state.approval_save(approval_of(holds=(interval_starting_in(60), interval_starting_in(120))))
+
+    state.holds_release("appr-m1")
+
+    assert state.holds_active(NOON) == []
+
+
+def test_saving_an_approval_again_replaces_its_holds(state: SqliteState) -> None:
+    state.approval_save(approval_of(holds=(interval_starting_in(60), interval_starting_in(120))))
+
+    state.approval_save(approval_of(holds=(interval_starting_in(180),)))
+
+    assert [hold.interval for hold in state.holds_active(NOON)] == [interval_starting_in(180)]
+
+
+# schema refusals
+
+
+def table_names_of(path: Path) -> set[str]:
+    connection = sqlite3.connect(path)
+    try:
+        rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    finally:
+        connection.close()
+    return {row[0] for row in rows}
+
+
+def write_lock_is_free(path: Path) -> bool:
+    other = sqlite3.connect(path, timeout=0, isolation_level=None)
+    try:
+        other.execute("BEGIN IMMEDIATE")
+        other.execute("ROLLBACK")
+        return True
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        other.close()
+
+
+def test_a_file_with_a_foreign_table_at_version_zero_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE notes (text TEXT)")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(AecaError) as refusal:
+        SqliteState(path)
+
+    assert "back up" in refusal.value.next_action.lower()
+    assert table_names_of(path) == {"notes"}
+    assert write_lock_is_free(path)
+
+
+def test_a_file_holding_a_journal_table_at_version_zero_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE journal (source_message_id TEXT)")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(AecaError):
+        SqliteState(path)
+
+    assert table_names_of(path) == {"journal"}
+
+
+def test_a_version_two_file_is_refused_and_leaves_no_lock(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA user_version = 2")
+    connection.close()
+
+    with pytest.raises(AecaError):
+        SqliteState(path)
+
+    assert write_lock_is_free(path)
+
+
+def test_a_file_that_is_not_a_database_is_refused_with_a_next_action(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    path.write_bytes(b"this is not a sqlite file" * 100)
+
+    with pytest.raises(AecaError) as refusal:
+        SqliteState(path)
+
+    assert str(path) in str(refusal.value)
+    assert refusal.value.next_action
+
+
+def test_a_read_only_file_is_refused_with_a_next_action(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    sqlite3.connect(path).close()
+    path.chmod(0o400)
+
+    with pytest.raises(AecaError) as refusal:
+        SqliteState(path)
+
+    assert refusal.value.next_action
+    assert write_lock_is_free_or_unwritable(path)
+
+
+def write_lock_is_free_or_unwritable(path: Path) -> bool:
+    path.chmod(0o600)
+    return write_lock_is_free(path)
+
+
+# re-registering a key
+
+
+def test_a_gated_action_journalled_as_automatic_is_refused(state: SqliteState) -> None:
+    state.journal_record(entry_of(reply_action()))
+
+    with pytest.raises(AecaError):
+        state.approval_save(approval_of())
+
+    assert state.approval_get("appr-m1") is None
+
+
+def test_saving_the_same_approval_twice_is_a_no_op_for_its_actions(state: SqliteState) -> None:
+    state.approval_save(approval_of())
+    state.action_update("m1:reply", ActionStatus.EXECUTING, ref="draft-1")
+
+    state.approval_save(approval_of())
+
+    record = state.action_get("m1:reply")
+    assert record is not None
+    assert (record.status, record.ref) == (ActionStatus.EXECUTING, "draft-1")
+
+
+def test_the_same_key_with_other_args_is_refused(state: SqliteState) -> None:
+    state.approval_save(approval_of())
+    changed = Action(verb=Verb.SEND_REPLY, key="m1:reply", args={"body": "Something else"})
+
+    with pytest.raises(AecaError):
+        state.approval_save(approval_of(actions=(changed,)))
+
+
+def test_the_same_key_with_another_verb_is_refused(state: SqliteState) -> None:
+    state.approval_save(approval_of())
+    changed = Action(verb=Verb.STAR, key="m1:reply", args={"body": "Thanks"})
+
+    with pytest.raises(AecaError):
+        state.approval_save(approval_of(actions=(changed,)))
+
+
+def test_the_same_key_under_another_approval_is_refused(state: SqliteState) -> None:
+    state.approval_save(approval_of("a1"))
+
+    with pytest.raises(AecaError):
+        state.approval_save(approval_of("a2", request_thread_id="r2"))
+
+
+# a failed commit
+
+
+class CommitFailsOnce:
+    """A connection whose first COMMIT fails, as a full disk or an I/O error would make it."""
+
+    def __init__(self, real: sqlite3.Connection, *, rollback_fails: bool = False) -> None:
+        self._real = real
+        self._commit_pending_failure = True
+        self._rollback_fails = rollback_fails
+
+    def execute(self, sql: str, *parameters: object) -> sqlite3.Cursor:
+        if sql == "COMMIT" and self._commit_pending_failure:
+            self._commit_pending_failure = False
+            raise sqlite3.OperationalError("disk I/O error")
+        if sql == "ROLLBACK" and self._rollback_fails:
+            raise sqlite3.OperationalError("rollback failed")
+        return self._real.execute(sql, *parameters)  # type: ignore[arg-type]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._real, name)
+
+
+def test_a_failed_commit_leaves_the_store_usable(state: SqliteState) -> None:
+    state._connection = CommitFailsOnce(state._connection)  # type: ignore[assignment]
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O"):
+        state.attempts_increment("m1")
+
+    assert state.attempts_increment("m1") == 1
+
+
+def test_a_failing_rollback_does_not_hide_the_original_error(state: SqliteState) -> None:
+    state._connection = CommitFailsOnce(state._connection, rollback_fails=True)  # type: ignore[assignment]
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O"):
+        state.attempts_increment("m1")
+
+
+# approval order
+
+
+def test_saving_an_approval_again_keeps_its_place_in_the_awaiting_order(
+    state: SqliteState,
+) -> None:
+    state.approval_save(approval_of("a1", actions=(reply_action("k1"),)))
+    state.approval_save(approval_of("a2", actions=(reply_action("k2"),), request_thread_id="r2"))
+
+    state.approval_save(
+        approval_of("a1", actions=(reply_action("k1"),), summary="Reply to Jürgen, revised")
+    )
+
+    assert [approval.id for approval in state.approvals_awaiting()] == ["a1", "a2"]

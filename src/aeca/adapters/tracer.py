@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from aeca.adapters.clock import NowProvider, SystemClock
+from aeca.adapters.clock import NowProvider
 from aeca.adapters.redactor import REDACTED, Redactor
 from aeca.adapters.rotating_log import RotatingLogFile, Rotation
 from aeca.domain.secret import SecretStr
@@ -19,10 +19,10 @@ class JsonlTracer:
         secrets: tuple[SecretStr, ...],
         rotation: Rotation,
         debug_enabled: bool,
-        clock: NowProvider | None = None,
+        clock: NowProvider,
     ) -> None:
         self._redactor = Redactor(secrets)
-        self._clock = clock or SystemClock()
+        self._clock = clock
         # 0700, because debug.log holds email text.
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._trace = RotatingLogFile(directory / "trace.jsonl", rotation)
