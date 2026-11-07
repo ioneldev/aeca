@@ -1,0 +1,22 @@
+# Secrets: only Compose hands these to the container.
+.env
+.env.*
+!.env.example
+client_secret*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local state and logs (the container keeps its own on the /data volume)
+data/
+*.log
+
+# Tool workspaces
+.superpowers/
+.worktrees/
+.DS_Store
