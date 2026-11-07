@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Literal
 
-from aeca.adapters.google_calendar import CALENDAR_ID, MISSING_EVENT_STATUSES
+from aeca.adapters.google_calendar import CALENDAR_ID, CANCELLED, MISSING_EVENT_STATUSES
 from aeca.adapters.google_errors import execute, execute_unless_missing
 
 
@@ -34,7 +34,6 @@ class SeedInsert:
 
 
 ALREADY_EXISTS = 409
-CANCELLED = "cancelled"
 
 
 class GoogleSeedCalendar:

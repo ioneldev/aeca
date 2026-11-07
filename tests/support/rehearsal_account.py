@@ -49,6 +49,10 @@ R_MTG = "18f0c0ffee000001"
 LOCK_SUBJECT = "AECA lock"
 OTHER_COPY = "evaluators-copy"
 BODY_PREFIX = "BODY-OF-"
+EVALUATORS_OWN_APPROVAL_THREAD = "t-ev-appr"
+# Rehearsal approval threads the evaluators' own request and hand APPROVE may end up in, when Gmail
+# threads them together by subject.
+REHEARSAL_APPROVAL_THREADS = ("t-self", "t-req0")
 
 # Already in Trash or already cancelled before reset-test runs: no call is expected on them.
 ALREADY_HANDLED_MESSAGES = frozenset({"sp-1", "sp-2"})
@@ -100,13 +104,17 @@ class ResetRun:
 
 
 def rehearsal_account(
-    *, lock_age: timedelta | None = timedelta(hours=1), with_orphan_draft: bool = False
+    *,
+    lock_age: timedelta | None = timedelta(hours=1),
+    with_orphan_draft: bool = False,
+    evaluators_approval_thread: str = EVALUATORS_OWN_APPROVAL_THREAD,
 ) -> RehearsalAccount:
     journal = WriteJournal()
     gmail = FakeGmailAccount(journal=journal, user_labels=dict(USER_LABELS))
     calendar = FakeCalendarService(journal=journal)
     account = RehearsalAccount(journal=journal, gmail=gmail, calendar=calendar)
-    for message in _messages(with_orphan_draft=with_orphan_draft):
+    options = _MailOptions(with_orphan_draft, evaluators_approval_thread)
+    for message in _messages(options):
         gmail.add(message)
     _fill_calendar(calendar)
     for number in range(3):
@@ -196,9 +204,20 @@ class _Mail:
     dmarc: str = "pass"
 
 
-def _messages(*, with_orphan_draft: bool) -> list[StoredMessage]:
-    mails = [*_rehearsal_mail(), *_already_trashed_mail(), *_google_mail(), *_evaluators_mail()]
-    if with_orphan_draft:
+@dataclass(frozen=True)
+class _MailOptions:
+    with_orphan_draft: bool
+    evaluators_approval_thread: str
+
+
+def _messages(options: _MailOptions) -> list[StoredMessage]:
+    mails = [
+        *_rehearsal_mail(),
+        *_already_trashed_mail(),
+        *_google_mail(),
+        *_evaluators_mail(options.evaluators_approval_thread),
+    ]
+    if options.with_orphan_draft:
         mails.append(_orphan_draft())
     return [_stored(mail) for mail in mails] + [_lock_draft_message()]
 
@@ -247,7 +266,8 @@ def _rehearsal_mail() -> list[_Mail]:
              labels=_l({SENT}), thread="t-self", minute=20, made_by_rehearsal=True,
              headers=_aeca("approval-request", approval_id("r-ext2", 1))),
         sent(id="r-self-approve", to=ACCOUNT, subject=f"Re: [AECA] Approve: {planning}",
-             labels=_l({SENT, INBOX}), thread="t-self", minute=22, made_by_rehearsal=True),
+             labels=_l({SENT, INBOX}), thread="t-self", minute=22, made_by_rehearsal=True,
+             headers=_replying_to("r-req1-self")),
         sent(id="r-alert", to=S_EXT, subject="[AECA] Alert: Google refused the token",
              labels=_l({SENT}), thread="t-alert", minute=24, made_by_rehearsal=True,
              headers=_aeca("alert", alert_id("credentials", date(2026, 11, 7)))),
@@ -287,7 +307,7 @@ def _google_mail() -> list[_Mail]:
     ]
 
 
-def _evaluators_mail() -> list[_Mail]:
+def _evaluators_mail(approval_thread: str) -> list[_Mail]:
     def grader(**fields: Any) -> _Mail:
         fields.setdefault("to", ACCOUNT)
         return _Mail(sender=GRADER, dmarc_domain="telekom.example", made_by_rehearsal=False,
@@ -341,10 +361,14 @@ def _evaluators_mail() -> list[_Mail]:
         own(id="ev-self", subject=f"Lunch with {S_INT}?", labels=_l({SENT, INBOX}),
             thread="t-ev-self", minute=80),
         own(id="ev-req", subject="[AECA] Approve: Quick question about the Q4 budget",
-            labels=_l({SENT}), thread="t-ev-appr", minute=82,
+            labels=_l({SENT}), thread=approval_thread, minute=82,
             headers=_aeca("approval-request", approval_id("ev-thread", 0))),
         own(id="ev-approve", subject="Re: [AECA] Approve: Quick question about the Q4 budget",
-            labels=_l({SENT, INBOX}), thread="t-ev-appr", minute=84),
+            labels=_l({SENT, INBOX}), thread=approval_thread, minute=84,
+            headers=_replying_to("ev-req")),
+        # A hand reply typed in a rehearsal approval thread, but answering the evaluators' email.
+        own(id="ev-hand-reply", to=GRADER, subject="Re: Quick question about the Q4 budget",
+            labels=_l({SENT}), thread="t-appr", minute=90, headers=_replying_to("ev-thread")),
         _Mail(id="ev-spoof", sender=S_EXT, to=ACCOUNT, subject="Spoofed from Proton",
               labels=_l({INBOX}), thread="t-ev-spoof", minute=86, made_by_rehearsal=False,
               dmarc_domain="protonmail.com", dmarc="fail"),
@@ -383,7 +407,7 @@ def _stored(mail: _Mail) -> StoredMessage:
         to=mail.to,
         subject=mail.subject,
         body=BODY_PREFIX + mail.id,
-        headers=dict(mail.headers),
+        headers={"Message-ID": _rfc822_id(mail.id), **dict(mail.headers)},
         authentication_results=_verdict(mail),
         label_ids=mail.labels,
         message_id=mail.id,
@@ -408,6 +432,14 @@ def _verdict(mail: _Mail) -> list[str]:
         f"mx.google.com; dkim=pass header.i=@{domain}; spf=pass smtp.mailfrom={domain}; "
         f"dmarc={mail.dmarc} (p=QUARANTINE dis=NONE) header.from={domain}"
     ]
+
+
+def _rfc822_id(message_id: str) -> str:
+    return f"<{message_id}@fixture.test>"
+
+
+def _replying_to(message_id: str) -> tuple[tuple[str, str], ...]:
+    return (("In-Reply-To", _rfc822_id(message_id)), ("References", _rfc822_id(message_id)))
 
 
 def _aeca(kind: str, aeca_id: str) -> tuple[tuple[str, str], ...]:

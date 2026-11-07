@@ -13,6 +13,7 @@ Each event carries a test-only made_by_rehearsal flag, kept beside it, as the or
 
 from __future__ import annotations
 
+import builtins
 import copy
 import re
 from collections.abc import Callable, Iterator
@@ -91,7 +92,7 @@ class _Events:
 
     def __getattr__(self, name: str) -> Callable[..., LazyRequest]:
         site = CallSite(CALENDAR, "events", "eventId")
-        return getattr(WritesOnly(self._calendar.journal, site), name)
+        return WritesOnly(self._calendar.journal, site).method(name)
 
     def _list(self, arguments: dict[str, Any]) -> dict[str, Any]:
         shown = [
@@ -108,7 +109,7 @@ class _Events:
             reply["nextPageToken"] = str(start + page_size)
         return reply
 
-    def _listed(self, single_events: bool) -> list[dict[str, Any]]:
+    def _listed(self, single_events: bool) -> builtins.list[dict[str, Any]]:
         if not single_events:
             return list(self._calendar.stored.values())
         return [

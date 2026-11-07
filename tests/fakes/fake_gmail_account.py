@@ -14,6 +14,7 @@ Each message carries a test-only made_by_rehearsal flag: the oracle the tests ch
 from __future__ import annotations
 
 import base64
+import builtins
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -93,7 +94,7 @@ class _Messages:
         *,
         userId: str,
         q: str | None = None,
-        labelIds: list[str] | None = None,
+        labelIds: builtins.list[str] | None = None,
         includeSpamTrash: bool = False,
         pageToken: str | None = None,
         maxResults: int | None = None,
@@ -107,7 +108,7 @@ class _Messages:
         userId: str,
         id: str,
         format: str = "full",
-        metadataHeaders: list[str] | None = None,
+        metadataHeaders: builtins.list[str] | None = None,
     ) -> LazyRequest:
         return LazyRequest(lambda: self._get(id, format))
 
@@ -115,7 +116,7 @@ class _Messages:
         return LazyRequest(lambda: self._trash(id))
 
     def __getattr__(self, name: str) -> Callable[..., LazyRequest]:
-        return getattr(WritesOnly(self._account.journal, CallSite(GMAIL, "messages", "id")), name)
+        return WritesOnly(self._account.journal, CallSite(GMAIL, "messages", "id")).method(name)
 
     def _list(self, query: _ListQuery, page_token: str | None) -> dict[str, Any]:
         newest_first = sorted(
@@ -197,4 +198,4 @@ class _Labels:
         return LazyRequest(lambda: {"labels": labels})
 
     def __getattr__(self, name: str) -> Callable[..., LazyRequest]:
-        return getattr(WritesOnly(self._account.journal, CallSite(GMAIL, "labels", "id")), name)
+        return WritesOnly(self._account.journal, CallSite(GMAIL, "labels", "id")).method(name)

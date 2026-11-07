@@ -10,7 +10,7 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from aeca.adapters.google_reset import CalendarEntry
+from aeca.domain.calendar_event import CalendarEntry
 from aeca.domain.labels import DRAFT, INBOX, PROCESSED, SENT, SPAM_SYSTEM_LABEL
 from aeca.domain.rehearsal_mail import LeftoverRule, MailMatch
 from aeca.domain.text import visible

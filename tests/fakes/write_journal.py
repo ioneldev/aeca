@@ -83,7 +83,9 @@ class WritesOnly:
     def __getattr__(self, name: str) -> Callable[..., LazyRequest]:
         if name.startswith("_"):
             raise AttributeError(name)
+        return self.method(name)
 
+    def method(self, name: str) -> Callable[..., LazyRequest]:
         def call(**arguments: Any) -> LazyRequest:
             target = str(arguments.get(self._site.target_argument) or "")
             self._journal.write(self._site.api, f"{self._site.area}.{name}", target)

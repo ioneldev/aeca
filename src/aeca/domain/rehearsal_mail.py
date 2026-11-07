@@ -6,6 +6,7 @@ only what Gmail vouches for: its single From with Gmail's own DMARC verdict, and
 mail the account itself wrote (spec §5 blocking case 9; tech-lead cases §1; ruling R53).
 """
 
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -21,18 +22,20 @@ from aeca.domain.templates import APPROVAL_REQUEST_KIND
 # one hash, so the search reaches far past any attempt a rehearsal could make.
 APPROVAL_ATTEMPTS_SEARCHED = 21
 RECIPIENT_HEADERS = ("To", "Cc", "Bcc")
+REPLY_HEADERS = ("In-Reply-To", "References")
+MESSAGE_ID_TOKEN = re.compile(r"<[^<>\s]+>")
 
 
 class LeftoverRule(StrEnum):
     FROM_A_REHEARSAL_SENDER = "R1"
     SENT_ONLY_TO_REHEARSAL_SENDERS = "R2"
     LINKED_BY_A_DERIVED_APPROVAL_ID = "R3"
-    IN_A_REHEARSAL_APPROVAL_THREAD = "R4"
+    REPLY_TO_A_REHEARSAL_APPROVAL_REQUEST = "R4"
     SEEDED_EVENT = "E1"
     DERIVED_EVENT = "E2"
 
 
-# The rules that can recognise the approval request that starts a rehearsal approval thread.
+# The rules that recognise a rehearsal approval request, which a hand reply may answer.
 REQUEST_RULES = frozenset(
     {LeftoverRule.SENT_ONLY_TO_REHEARSAL_SENDERS, LeftoverRule.LINKED_BY_A_DERIVED_APPROVAL_ID}
 )
@@ -43,6 +46,9 @@ class MailItem:
     facts: EmailFacts
     # Every address in To, Cc and Bcc, lowercased; None when one of those headers can't be read.
     recipients: frozenset[str] | None
+    # The <id> tokens of its own Message-ID, and of the In-Reply-To and References it answers.
+    rfc822_ids: frozenset[str]
+    replied_to_ids: frozenset[str]
 
     @property
     def message_id(self) -> str:
@@ -60,7 +66,12 @@ def mail_item_of(raw: RawEmail, account: str) -> MailItem:
     settings = FactSettings(
         account_address=account, internal_senders=frozenset(), bulk_senders=frozenset()
     )
-    return MailItem(facts=extract_facts(raw, settings), recipients=_recipients(raw))
+    return MailItem(
+        facts=extract_facts(raw, settings),
+        recipients=_recipients(raw),
+        rfc822_ids=_message_ids_in(raw, ("Message-ID",)),
+        replied_to_ids=_message_ids_in(raw, REPLY_HEADERS),
+    )
 
 
 def is_from_a_rehearsal_sender(facts: EmailFacts, senders: frozenset[str]) -> bool:
@@ -94,10 +105,10 @@ def rehearsal_mail(items: Sequence[MailItem], senders: frozenset[str]) -> list[M
     direct = {
         item.message_id: rule for item in items if (rule := evidence.direct_rule(item)) is not None
     }
-    approval_threads = _rehearsal_approval_threads(items, direct)
+    request_ids = _rehearsal_request_ids(items, direct)
     matches = []
     for item in items:
-        rule = direct.get(item.message_id) or _thread_rule(item, approval_threads)
+        rule = direct.get(item.message_id) or _reply_rule(item, request_ids)
         if rule is not None:
             matches.append(MailMatch(item=item, rule=rule))
     return matches
@@ -122,26 +133,25 @@ class _Evidence:
         return None
 
 
-# A hand reply typed in the AECA inbox carries no AECA header, and an evaluator's reply to their own
-# copy's request looks the same. Only the thread tells them apart: it must have started with a
-# request this module already matched.
-def _rehearsal_approval_threads(
+def _rehearsal_request_ids(
     items: Sequence[MailItem], direct: dict[str, LeftoverRule]
 ) -> frozenset[str]:
-    first_by_thread: dict[str, MailItem] = {}
-    for item in sorted(items, key=lambda each: (each.facts.received_at, each.message_id)):
-        first_by_thread.setdefault(item.facts.thread_id, item)
     return frozenset(
-        thread_id
-        for thread_id, first in first_by_thread.items()
-        if direct.get(first.message_id) in REQUEST_RULES
-        and first.facts.aeca_kind == APPROVAL_REQUEST_KIND
+        rfc822_id
+        for item in items
+        if direct.get(item.message_id) in REQUEST_RULES
+        and item.facts.aeca_kind == APPROVAL_REQUEST_KIND
+        for rfc822_id in item.rfc822_ids
     )
 
 
-def _thread_rule(item: MailItem, approval_threads: frozenset[str]) -> LeftoverRule | None:
-    if _written_by_the_account(item.facts) and item.facts.thread_id in approval_threads:
-        return LeftoverRule.IN_A_REHEARSAL_APPROVAL_THREAD
+# A hand reply typed in the AECA inbox carries no AECA header, and an evaluator's reply to their
+# own copy's request looks the same. Gmail may put both in one thread by subject, so only the
+# reply's own In-Reply-To and References tell them apart. Mail AECA wrote is left to R2 and R3.
+def _reply_rule(item: MailItem, request_ids: frozenset[str]) -> LeftoverRule | None:
+    facts = item.facts
+    if SENT in facts.label_ids and facts.aeca_kind is None and item.replied_to_ids & request_ids:
+        return LeftoverRule.REPLY_TO_A_REHEARSAL_APPROVAL_REQUEST
     return None
 
 
@@ -163,6 +173,16 @@ def _recipients(raw: RawEmail) -> frozenset[str] | None:
         # The stdlib parser raises from deep inside on a hostile header; unreadable counts as
         # unknown, and an unknown recipient never matches R2.
         return None
+
+
+def _message_ids_in(raw: RawEmail, header_names: Sequence[str]) -> frozenset[str]:
+    message = parse_message(raw)
+    try:
+        values = [str(value) for name in header_names for value in message.get_all(name, [])]
+    except Exception:
+        # A header the stdlib can't parse names no message, so it never makes a reply match.
+        return frozenset()
+    return frozenset(token for value in values for token in MESSAGE_ID_TOKEN.findall(value))
 
 
 def _domain_of(address: str) -> str:

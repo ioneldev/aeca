@@ -8,6 +8,7 @@ fixture item is the oracle, never reset-test's own finder.
 import ast
 import inspect
 import re
+from collections.abc import Callable
 from dataclasses import fields
 from datetime import timedelta
 from pathlib import Path
@@ -34,6 +35,7 @@ from support.rehearsal_account import (
     MANUAL_EVENT,
     NOW,
     R_MTG,
+    REHEARSAL_APPROVAL_THREADS,
     S_EXT,
     S_INT,
     RehearsalAccount,
@@ -45,6 +47,7 @@ from support.rehearsal_account import (
     untouched_events,
     untouched_messages,
 )
+from test_architecture import SOURCE_ROOT, imported_modules
 
 from aeca import cli
 from aeca.adapters.google_reset import GmailResetMailbox, GoogleResetCalendar
@@ -54,6 +57,7 @@ from aeca.tools import tool_commands
 from aeca.tools.reset_test import ResetDeps
 
 TRASH, DRAFT = "TRASH", "DRAFT"
+Arrange = Callable[[RehearsalAccount], object]
 LOCK_WINDOW_SECONDS = 600
 
 
@@ -229,6 +233,30 @@ def test_b3e_the_evaluators_own_copy_and_self_sent_mail_are_left_alone() -> None
     assert {"r-req1-self", "r-self-approve"} <= trashed
 
 
+@pytest.mark.parametrize("shared_thread", REHEARSAL_APPROVAL_THREADS)
+def test_i1_the_evaluators_request_and_hand_approve_in_a_rehearsal_thread_are_left_alone(
+    shared_thread: str,
+) -> None:
+    account = rehearsal_account(lock_age=None, evaluators_approval_thread=shared_thread)
+    expected = messages_to_trash(account)
+
+    run_reset(account, apply=True)
+
+    trashed = set(account.trashed_ids())
+    assert not {"ev-req", "ev-approve"} & trashed
+    assert "r-self-approve" in trashed
+    assert trashed == expected
+
+
+def test_i1_a_hand_reply_in_a_rehearsal_thread_to_someone_else_is_left_alone() -> None:
+    account = rehearsal_account(lock_age=None)
+
+    run_reset(account, apply=True)
+
+    assert "ev-hand-reply" not in account.trashed_ids()
+    assert "r-req" in account.trashed_ids()
+
+
 def test_b3f_mail_from_google_is_left_alone_labels_included() -> None:
     account = rehearsal_account(lock_age=None)
     google = {i: frozenset(account.labels_of(i)) for i in ("g-1", "g-2", "g-3", "g-4")}
@@ -276,11 +304,11 @@ def test_b4_a_recurring_seed_is_cancelled_as_its_master_and_no_instance_survives
 # --- B5. Refuse while any copy may hold the lock, and fail closed ---
 
 
-def lock_aged(age: timedelta):  # type: ignore[no-untyped-def]
+def lock_aged(age: timedelta) -> Arrange:
     return lambda account: account.add_lock(heartbeat=NOW - age)
 
 
-def lock_body(body: str):  # type: ignore[no-untyped-def]
+def lock_body(body: str) -> Arrange:
     return lambda account: account.add_lock(heartbeat=None, body=body)
 
 
@@ -289,7 +317,13 @@ def two_locks(account: RehearsalAccount) -> None:
     account.add_lock(heartbeat=NOW - timedelta(seconds=10))
 
 
-def drafts_list_fails(error: Exception):  # type: ignore[no-untyped-def]
+def three_locks_with_the_fresh_one_in_the_middle(account: RehearsalAccount) -> None:
+    account.add_lock(heartbeat=NOW - timedelta(hours=1))
+    account.add_lock(heartbeat=NOW - timedelta(seconds=10))
+    account.add_lock(heartbeat=NOW - timedelta(hours=2))
+
+
+def drafts_list_fails(error: Exception) -> Arrange:
     def fail(account: RehearsalAccount) -> None:
         account.add_lock(heartbeat=NOW - timedelta(hours=1))
         account.drafts.list_failure = error
@@ -313,6 +347,9 @@ REFUSING_LOCKS = [
         id="naive-heartbeat",
     ),
     pytest.param(two_locks, "10 s old", id="lowest-stale-other-fresh"),
+    pytest.param(
+        three_locks_with_the_fresh_one_in_the_middle, "10 s old", id="fresh-lock-in-the-middle"
+    ),
     pytest.param(drafts_list_fails(http_error(500)), "could not read", id="drafts-list-500"),
     pytest.param(
         drafts_list_fails(ConnectionResetError("reset by peer")),
@@ -323,7 +360,9 @@ REFUSING_LOCKS = [
 
 
 @pytest.mark.parametrize(("arrange", "says"), REFUSING_LOCKS)
-def test_b5_refuses_with_no_write_while_a_copy_may_hold_the_lock(arrange, says: str) -> None:  # type: ignore[no-untyped-def]
+def test_b5_refuses_with_no_write_while_a_copy_may_hold_the_lock(
+    arrange: Arrange, says: str
+) -> None:
     account = rehearsal_account(lock_age=None)
     arrange(account)
     locks_before = lock_draft_bytes(account)
@@ -355,7 +394,7 @@ def test_b5_a_fresh_lock_says_how_long_to_wait(age: timedelta) -> None:
     "arrange",
     [pytest.param(lock_aged(timedelta(seconds=601)), id="age-601s"), pytest.param(no_lock)],
 )
-def test_b5_proceeds_once_the_lock_is_stale_or_absent(arrange) -> None:  # type: ignore[no-untyped-def]
+def test_b5_proceeds_once_the_lock_is_stale_or_absent(arrange: Arrange) -> None:
     account = rehearsal_account(lock_age=None)
     arrange(account)
     locks_before = lock_draft_bytes(account)
@@ -739,3 +778,40 @@ def test_the_command_prints_the_plan_on_stdout_and_stops_without_yes(
     out = capsys.readouterr().out
     assert code == 0 and "r-int" in tokens(out) and "--yes" in out
     assert account.journal.mutations() == []
+
+
+# --- the layers: the tool reads Google only through its adapter, and names each value once ---
+
+
+def module_imports(relative: str) -> set[str]:
+    path = SOURCE_ROOT / "aeca" / relative
+    package = ".".join(path.relative_to(SOURCE_ROOT).parent.parts)
+    return imported_modules(path.read_text(encoding="utf-8"), package=package)
+
+
+@pytest.mark.parametrize("module", ["tools/reset_test.py", "tools/reset_plan.py"])
+def test_the_tool_and_its_plan_never_import_an_adapter(module: str) -> None:
+    assert not {name for name in module_imports(module) if name.startswith("aeca.adapters")}
+
+
+def modules_assigning(name: str) -> list[str]:
+    found = []
+    for path in sorted((SOURCE_ROOT / "aeca").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        targets = [
+            target
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+        ]
+        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            found.append(str(path.relative_to(SOURCE_ROOT / "aeca")))
+    return found
+
+
+def test_google_calendar_names_the_cancelled_status_once() -> None:
+    assert modules_assigning("CANCELLED") == ["adapters/google_calendar.py"]
+
+
+def test_the_trash_label_is_named_once_beside_the_other_system_labels() -> None:
+    assert modules_assigning("TRASH") == ["domain/labels.py"]

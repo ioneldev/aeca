@@ -14,14 +14,14 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Protocol
 
-from aeca.adapters.google_reset import CalendarEntry
 from aeca.application.executor import MAX_EVENT_ATTEMPTS
 from aeca.application.ports import Clock
+from aeca.domain.calendar_event import CalendarEntry
 from aeca.domain.email import RawEmail
 from aeca.domain.errors import AecaError, ConfigError
 from aeca.domain.facts import same_gmail_account
 from aeca.domain.ids import event_id
-from aeca.domain.labels import DRAFT, INBOX, PROCESSED
+from aeca.domain.labels import DRAFT, INBOX, PROCESSED, TRASH
 from aeca.domain.rehearsal_mail import (
     LeftoverRule,
     MailItem,
@@ -33,10 +33,8 @@ from aeca.domain.rehearsal_mail import (
 from aeca.domain.reset_lock import LockCheck, LockReading, blocking_lock
 from aeca.settings import RehearsalSenders, Settings
 from aeca.tools.reset_plan import PlannedEvent, ResetPlan, SenderTally, plan_lines
-from aeca.tools.seed_calendar import TEST_TAG
+from aeca.tools.seed_calendar import TEST_TAG_NAME, TEST_TAG_VALUE
 
-TRASH = "TRASH"
-[(SEED_TAG_NAME, SEED_TAG_VALUE)] = TEST_TAG.items()
 SINGLE_ADDRESS = re.compile(r"[^\s@,;<>()\"']+@[^\s@,;<>()\"']+\.[^\s@,;<>()\"']+")
 STOP_EVERY_COPY = "Stop every copy of AECA with make stop"
 
@@ -203,8 +201,8 @@ def _lowercased(senders: RehearsalSenders) -> frozenset[str]:
 def _rehearsal_events(calendar: ResetCalendar, sources: Sequence[str]) -> list[PlannedEvent]:
     seeded = [
         PlannedEvent(entry, LeftoverRule.SEEDED_EVENT)
-        for entry in calendar.tagged_events(SEED_TAG_NAME, SEED_TAG_VALUE)
-        if entry.private_properties.get(SEED_TAG_NAME) == SEED_TAG_VALUE and not entry.cancelled
+        for entry in calendar.tagged_events(TEST_TAG_NAME, TEST_TAG_VALUE)
+        if entry.private_properties.get(TEST_TAG_NAME) == TEST_TAG_VALUE and not entry.cancelled
     ]
     derived = [
         PlannedEvent(entry, LeftoverRule.DERIVED_EVENT)

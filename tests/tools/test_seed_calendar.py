@@ -7,7 +7,14 @@ from fakes.memory_seed_calendar import MemorySeedCalendar
 from fakes.write_journal import WriteJournal
 
 from aeca.adapters.google_seed_calendar import GoogleSeedCalendar
-from aeca.tools.seed_calendar import SeedWeek, next_monday, seed_calendar
+from aeca.tools.seed_calendar import (
+    TEST_TAG_NAME,
+    TEST_TAG_VALUE,
+    SeedReport,
+    SeedWeek,
+    next_monday,
+    seed_calendar,
+)
 
 BUCHAREST = ZoneInfo("Europe/Bucharest")
 MONDAY = date(2026, 11, 9)
@@ -34,7 +41,8 @@ def test_seeded_events_are_tagged() -> None:
 
     assert calendar.events
     for event in calendar.events:
-        assert event.private_properties["aeca_test"] == "true"
+        assert event.private_properties == {TEST_TAG_NAME: TEST_TAG_VALUE}
+        assert (TEST_TAG_NAME, TEST_TAG_VALUE) == ("aeca_test", "true")
         assert event.summary.startswith("[AECA test]")
 
 
@@ -173,7 +181,7 @@ def cancel(calendar: FakeCalendarService, event_ids: list[str]) -> None:
     calendar.journal.clear()
 
 
-def reseed(calendar: FakeCalendarService):  # type: ignore[no-untyped-def]
+def reseed(calendar: FakeCalendarService) -> SeedReport:
     return seed_calendar(
         GoogleSeedCalendar(calendar, ACCOUNT), SeedWeek(week_start=MONDAY, zone=BUCHAREST)
     )

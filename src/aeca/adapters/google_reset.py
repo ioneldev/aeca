@@ -7,15 +7,15 @@ draft write, so neither the lock nor anything else can be changed through it.
 
 import base64
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
 from datetime import datetime
 from email import message_from_bytes, policy
 from typing import Any
 
 from aeca.adapters.gmail import raw_email_from_reply
 from aeca.adapters.gmail_lease import LOCK_SUBJECT, lock_holding_of
-from aeca.adapters.google_calendar import CALENDAR_ID, MISSING_EVENT_STATUSES
+from aeca.adapters.google_calendar import CALENDAR_ID, CANCELLED, MISSING_EVENT_STATUSES
 from aeca.adapters.google_errors import execute, execute_unless_missing
+from aeca.domain.calendar_event import CalendarEntry
 from aeca.domain.email import RawEmail
 from aeca.domain.lease import LOCK_KIND
 from aeca.domain.reset_lock import LockReading
@@ -23,7 +23,6 @@ from aeca.domain.reset_lock import LockReading
 USER = "me"
 MESSAGE_PAGE_SIZE = 500
 EVENT_PAGE_SIZE = 2500
-CANCELLED = "cancelled"
 
 
 class GmailResetMailbox:
@@ -72,17 +71,6 @@ class GmailResetMailbox:
         return self._drafts.list(userId=USER, **_page(page_token))
 
 
-@dataclass(frozen=True, slots=True)
-class CalendarEntry:
-    # The id to cancel: a recurring event's master, never one of its instances.
-    id: str
-    summary: str
-    # The start as Google gives it: a date, or a date and time.
-    starts: str
-    cancelled: bool
-    private_properties: dict[str, str] = field(default_factory=dict)
-
-
 class GoogleResetCalendar:
     def __init__(self, service: Any) -> None:
         self._events = service.events()
@@ -127,7 +115,9 @@ def _page(page_token: str | None) -> dict[str, str]:
     return {"pageToken": page_token} if page_token else {}
 
 
-# Whatever can't be read might be the lock, and a lock that can't be read refuses the reset.
+# A draft whose raw can't be decoded or parsed might be the lock, and a lock that can't be read
+# refuses the reset. A draft that parses but carries neither the lock's subject nor its kind is not
+# the lock: AECA writes both on every lock draft.
 def _may_be_a_lock(reply: dict[str, Any]) -> bool:
     try:
         raw = base64.urlsafe_b64decode(reply["message"]["raw"] + "==")

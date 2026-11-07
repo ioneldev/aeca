@@ -11,6 +11,8 @@ from aeca.domain.calendar_event import CalendarEvent, NewEvent
 from aeca.domain.time_range import Interval
 
 CALENDAR_ID = "primary"
+# The status Google gives an event that was deleted: it stays readable by id.
+CANCELLED = "cancelled"
 LIST_PAGE_SIZE = 2500
 # Day-1 spike: 404 is certain, 410 is how Google may report an event that was deleted for good.
 MISSING_EVENT_STATUSES = (404, 410)
@@ -88,7 +90,7 @@ class GoogleCalendar:
         return arguments
 
     def _to_event(self, item: dict[str, Any]) -> CalendarEvent:
-        cancelled = item.get("status") == "cancelled"
+        cancelled = item.get("status") == CANCELLED
         all_day = "date" in item.get("start", {})
         return CalendarEvent(
             id=item["id"],

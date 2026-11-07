@@ -10,7 +10,9 @@ from zoneinfo import ZoneInfo
 from aeca.adapters.google_seed_calendar import SeedEvent, SeedInsert
 
 EVENT_PREFIX = "[AECA test]"
-TEST_TAG = {"aeca_test": "true"}
+TEST_TAG_NAME = "aeca_test"
+TEST_TAG_VALUE = "true"
+TEST_TAG = {TEST_TAG_NAME: TEST_TAG_VALUE}
 SEED_ID_PREFIX = "aecaseed"
 WORKING_DAYS = 5
 MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY = range(5)
