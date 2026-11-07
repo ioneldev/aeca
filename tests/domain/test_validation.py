@@ -467,3 +467,77 @@ def test_the_fallback_decision_is_unknown_and_changes_nothing() -> None:
         ReplyKind.NONE,
     )
     assert result.summary == "could not classify"
+
+
+# --- a window must be a proposed time, not a stretch of days (ruling R46) ---
+
+TOO_WIDE = "meeting.windows[0]: too wide to be a proposed time"
+
+
+def windows_kept(*submitted: ModelWindow) -> tuple[Any, ...]:
+    result = validated(meeting_decision(*submitted), context(text="Tuesday at 3pm"))
+    assert result.meeting is not None
+    return result.meeting.windows
+
+
+def test_a_window_across_a_whole_week_is_dropped_and_noted() -> None:
+    ctx = context(text="Tuesday at 3pm")
+
+    week = window(start="2026-11-09T09:00:00+02:00", end="2026-11-13T17:00:00+02:00")
+
+    result = validated(meeting_decision(week), ctx)
+
+    assert result.meeting is not None and result.meeting.windows == ()
+    assert result.dropped == (TOO_WIDE,)
+
+
+def test_a_window_across_a_whole_day_is_dropped() -> None:
+    whole_day = window(start="2026-11-10T00:00:00+02:00", end="2026-11-11T00:00:00+02:00")
+
+    assert windows_kept(whole_day) == ()
+
+
+def test_a_window_across_part_of_a_day_is_kept() -> None:
+    afternoon = window(start="2026-11-10T12:00:00+02:00", end="2026-11-10T17:00:00+02:00")
+
+    assert len(windows_kept(afternoon)) == 1
+
+
+def test_a_window_without_an_end_is_kept() -> None:
+    assert len(windows_kept(window())) == 1
+
+
+def test_a_window_of_exactly_twelve_hours_is_kept_and_one_minute_more_is_dropped() -> None:
+    twelve_hours = window(start="2026-11-10T08:00:00+02:00", end="2026-11-10T20:00:00+02:00")
+    twelve_hours_and_a_minute = window(
+        start="2026-11-10T08:00:00+02:00", end="2026-11-10T20:01:00+02:00"
+    )
+
+    assert len(windows_kept(twelve_hours)) == 1
+    assert windows_kept(twelve_hours_and_a_minute) == ()
+
+
+def test_the_width_is_measured_in_utc_when_the_clocks_go_forward() -> None:
+    # Clocks go forward at 03:00 on 2027-03-28: 13 hours on the wall, 12 in real time.
+    overnight = window(start="2027-03-27T20:00", end="2027-03-28T09:00")
+
+    assert len(windows_kept(overnight)) == 1
+
+
+def test_the_width_is_measured_in_utc_when_the_clocks_go_back() -> None:
+    # Clocks go back at 04:00 on 2027-10-31: 12 hours on the wall, 13 in real time.
+    overnight = window(start="2027-10-30T20:00", end="2027-10-31T08:00")
+
+    assert windows_kept(overnight) == ()
+
+
+def test_an_end_that_is_before_the_start_in_utc_drops_the_window() -> None:
+    # 03:30 does not exist on 2027-03-28 in Bucharest: the clocks jump from 03:00 to 04:00, so
+    # 03:30 reads as 01:30 UTC and 04:00 as 01:00 UTC. The wall clock says the end is later.
+    spring_gap = window(start="2027-03-28T03:30", end="2027-03-28T04:00")
+    ctx = context(text="Tuesday at 3pm")
+
+    result = validated(meeting_decision(spring_gap), ctx)
+
+    assert result.meeting is not None and result.meeting.windows == ()
+    assert result.dropped == ("meeting.windows[0]: end is not after start",)

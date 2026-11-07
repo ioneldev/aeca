@@ -100,3 +100,11 @@ def test_the_system_prompt_names_the_sender_written_facts_as_data() -> None:
 
 def test_the_system_prompt_is_read_once() -> None:
     assert system_prompt() is system_prompt()
+
+
+def test_the_system_prompt_says_a_window_needs_a_day_and_a_time_or_part_of_a_day() -> None:
+    prompt = system_prompt()
+    assert "specific day" in prompt
+    assert "Tuesday at 15:00" in prompt
+    assert "Tuesday afternoon" in prompt
+    assert "propose none" in prompt

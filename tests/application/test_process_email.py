@@ -12,17 +12,26 @@ import pytest
 from fakes.crash import Killed
 from fakes.recording_approvals import FAKE_APPROVAL_ID
 from support.decisions import SUMMARY, decision_of
+from support.facts import NOW, make_facts
 from support.inbox_rig import ACCOUNT, BUCHAREST, InboxRig, RigOptions
 
 from aeca.application.ports import OpenApproval
 from aeca.domain.actions import ActionRecord, ActionStatus, Verb
 from aeca.domain.approval import ApprovalState
 from aeca.domain.calendar_event import CalendarEvent
-from aeca.domain.decision import Meeting, Window
+from aeca.domain.decision import (
+    Decision,
+    Meeting,
+    ModelDecision,
+    ModelMeeting,
+    ModelWindow,
+    Window,
+)
 from aeca.domain.errors import EmailError
 from aeca.domain.ids import approval_id
 from aeca.domain.labels import AWAITING, ERROR, PROCESSED, Label, ReplyKind
 from aeca.domain.time_range import Interval
+from aeca.domain.validation import ValidationContext, validate
 
 COLLEAGUE = "colleague@example.com"
 MANAGER = "boss@example.com"
@@ -734,3 +743,43 @@ def test_an_email_found_processed_closes_its_journal(rig: InboxRig) -> None:
     assert resumable == [message_id]
     assert rig.processor.unfinished() == []
     assert len(rig.audit.lines) == 1
+
+
+def test_a_meeting_whose_only_window_spans_the_week_gets_alternatives_not_an_event(
+    rig: InboxRig,
+) -> None:
+    opener = rig.record_approvals()
+    rig.next_decision = validated_meeting_for_the_whole_week()
+    message_id = rig.receive(sender=COLLEAGUE, subject="Sync?", body="Can we meet next week?")
+
+    line = rig.processor.process(message_id)
+
+    [request] = opener.opened
+    assert [(a.verb, a.args.get("template")) for a in request.actions] == [
+        (Verb.SEND_REPLY, "alternatives")
+    ]
+    assert line is not None and line.outcome == "awaiting_approval"
+    assert rig.calendar.inserted == []
+
+
+def validated_meeting_for_the_whole_week() -> Decision:
+    submitted = ModelDecision(
+        primary_label="MEETING_REQUEST",
+        summary="a summary",
+        meeting=ModelMeeting(
+            title="Sync",
+            windows=[
+                ModelWindow(
+                    start="2026-11-09T09:00:00+02:00",
+                    end="2026-11-13T17:00:00+02:00",
+                    quote="meet next week",
+                )
+            ],
+        ),
+    )
+    context = ValidationContext(
+        facts=make_facts(text="Can we meet next week?"), now=NOW, zone=BUCHAREST
+    )
+    result = validate(submitted, context)
+    assert isinstance(result, Decision)
+    return result
