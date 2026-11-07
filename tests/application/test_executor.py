@@ -1,6 +1,7 @@
 """The executor runs each recorded action once: a label change is one modify of one message, and a
 send goes through a recorded draft, so neither a crash nor a lost state file sends it twice."""
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -11,8 +12,14 @@ from fakes.recording_tracer import RecordingTracer
 from support.emails import make_raw
 
 from aeca.adapters.sqlite_state import SqliteState
-from aeca.application.executor import ActionFailed, Executor, ExecutorDeps
+from aeca.application.executor import (
+    RECENT_SENT_SEARCHED,
+    ActionFailed,
+    Executor,
+    ExecutorDeps,
+)
 from aeca.domain.actions import Action, ActionStatus, Verb
+from aeca.domain.approval import Approval, ApprovalState
 from aeca.domain.errors import CredentialsRevoked, EmailError
 from aeca.domain.facts import EmailFacts, FactSettings, extract_facts
 from aeca.domain.journal import JournalEntry
@@ -21,6 +28,7 @@ from aeca.domain.labels import PROCESSED
 ACCOUNT = "aeca@gmail.com"
 MANAGER = "boss@example.com"
 SENDER = "client@example.com"
+SENT_AT = datetime(2026, 11, 7, 10, 0, tzinfo=UTC)
 
 
 class Rig:
@@ -287,3 +295,84 @@ def test_run_returns_each_actions_record_in_order(rig: Rig) -> None:
     assert [(r.action, r.status) for r in records] == [
         (actions[0], ActionStatus.DONE), (actions[1], ActionStatus.DONE),
     ]  # fmt: skip
+
+
+# F1: a message in a thread of its own has no thread to check, so the recent sent mail is checked.
+
+
+def sent_by_aeca(message_id: str, aeca_id: str, *, minutes_later: int = 0) -> object:
+    return make_raw(
+        sender=ACCOUNT,
+        to=MANAGER,
+        headers={"X-AECA-Kind": "urgent-notice", "X-AECA-Id": aeca_id},
+        label_ids=("SENT",),
+        message_id=message_id,
+        thread_id=f"thread-of-{message_id}",
+        internal_date=SENT_AT + timedelta(minutes=minutes_later),
+    )
+
+
+def test_a_notice_among_the_recent_sent_mail_is_not_sent_again(rig: Rig) -> None:
+    action = rig.record(notice())[0]
+    rig.mailbox.add(sent_by_aeca("sent-before-the-wipe", action.key))  # type: ignore[arg-type]
+
+    rig.executor.run([action], rig.source)
+
+    assert rig.mailbox.sent == [] and rig.mailbox.drafts == {}
+    assert (rig.status_of(action), rig.ref_of(action)) == (
+        ActionStatus.DONE, "sent-before-the-wipe",
+    )  # fmt: skip
+    assert rig.mailbox.recent_sent_reads == [RECENT_SENT_SEARCHED] == [25]
+
+
+def test_a_notice_sent_further_back_than_the_recent_window_is_sent_again(rig: Rig) -> None:
+    action = rig.record(notice())[0]
+    rig.mailbox.add(sent_by_aeca("long-ago", action.key))  # type: ignore[arg-type]
+    for number in range(30):
+        later = sent_by_aeca(f"later-{number}", f"k-other-{number}", minutes_later=number + 1)
+        rig.mailbox.add(later)  # type: ignore[arg-type]
+
+    rig.executor.run([action], rig.source)
+
+    assert [message.kind for message in rig.mailbox.sent] == ["urgent-notice"]
+
+
+def test_a_reply_checks_its_thread_and_not_the_recent_sent_mail(rig: Rig) -> None:
+    action = rig.record(acknowledgement())[0]
+
+    rig.executor.run([action], rig.source)
+
+    assert rig.mailbox.recent_sent_reads == []
+    assert rig.mailbox.thread_reads == ["t1"]
+
+
+# F4: an approved reply carries a kind of its own, so it never counts as the unapproved one.
+
+
+def test_an_approved_decline_is_sent_with_a_kind_of_its_own(rig: Rig) -> None:
+    decline = Action(verb=Verb.SEND_REPLY, key="k-decline@0", args={"template": "decline"})
+    rig.store.approval_save(
+        Approval(
+            id="a-1",
+            source_message_id="m1",
+            source_thread_id="t1",
+            attempt=0,
+            actions=(decline,),
+            state=ApprovalState.APPROVED,
+            request_thread_id=None,
+            summary="s",
+            holds=(),
+        )
+    )
+
+    rig.executor.run([decline], rig.source)
+
+    assert [message.kind for message in rig.mailbox.sent] == ["approved-decline"]
+
+
+def test_an_automatic_decline_keeps_its_kind(rig: Rig) -> None:
+    decline = rig.record(Action(verb=Verb.SEND_REPLY, key="k-d", args={"template": "decline"}))[0]
+
+    rig.executor.run([decline], rig.source)
+
+    assert [message.kind for message in rig.mailbox.sent] == ["decline"]

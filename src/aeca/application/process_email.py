@@ -3,7 +3,8 @@ AECA/processed.
 
 The decision and its plan are journalled before the first side effect (spec §4.6). A crash at any
 later point resumes from the journal, by message id and without asking the model again, and the
-executor runs each action once.
+executor runs each action once. The journal entry stays incomplete until the email is audited and
+labelled processed, so even an email that already left the Inbox is finished.
 """
 
 from collections.abc import Callable
@@ -14,7 +15,16 @@ from aeca.application.budget import Budget, Spend
 from aeca.application.executor import Executor
 from aeca.application.failures import describe, ends_the_tick
 from aeca.application.meetings import MeetingRequest, plan_meeting
-from aeca.application.ports import ApprovalOpener, Calendar, Clock, Mailbox, OpenApproval, Tracer
+from aeca.application.ports import (
+    FIRST_ATTEMPT,
+    ApprovalOpener,
+    Calendar,
+    Clock,
+    Mailbox,
+    MessageSummary,
+    OpenApproval,
+    Tracer,
+)
 from aeca.application.state_ports import AuditLog, StateStore
 from aeca.domain.actions import Action, ActionStatus
 from aeca.domain.approval import ApprovalState
@@ -22,21 +32,19 @@ from aeca.domain.audit import ActionSummary, AuditLine, Outcome
 from aeca.domain.decision import Decision
 from aeca.domain.errors import EmailError
 from aeca.domain.facts import EmailFacts, FactSettings, extract_facts
+from aeca.domain.ids import approval_id
 from aeca.domain.journal import JournalEntry, JournalledDecision
-from aeca.domain.labels import AWAITING, ERROR, PROCESSED, ReplyKind
+from aeca.domain.labels import AWAITING, ERROR, PROCESSED, SENT
 from aeca.domain.meeting_outcome import AlreadyOnCalendar, MeetingOutcome
 from aeca.domain.planner import PlanSettings
 from aeca.domain.policy import INBOX_REMOVERS, PolicyContext, PolicySettings, plan_actions
 from aeca.domain.replies import ReplyContext, reply_block_reason
+from aeca.domain.templates import APPROVAL_REQUEST_KIND, AUTOMATIC_REPLY_KINDS
 from aeca.domain.text import bounded
 
 MAX_TRIES = 3
 ERROR_TEXT_LIMIT = 300
-SENT = "SENT"
 INVITATION_ON_CALENDAR = "invitation_on_calendar"
-# The reply kinds AECA sends without approval: one of them in a thread uses up the thread's
-# unapproved reply (spec §4.3). An approved reply, such as a confirmation, does not.
-UNAPPROVED_REPLY_KINDS = frozenset(kind.value for kind in ReplyKind if kind is not ReplyKind.NONE)
 UNFINISHED_STATUSES = frozenset({ActionStatus.PENDING, ActionStatus.EXECUTING})
 
 
@@ -61,6 +69,14 @@ class InboxDeps:
     executor: Executor
     approvals: ApprovalOpener
     settings: InboxSettings
+
+
+@dataclass(frozen=True, slots=True)
+class _Incoming:
+    """An email to process, with its thread read once, before the model is asked anything."""
+
+    facts: EmailFacts
+    thread: tuple[MessageSummary, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +108,7 @@ class _Failure:
     error: Exception
     spend: Spend
     progress: _Progress | None = None
+    approval: _OpenedApproval | None = None
 
 
 class InboxProcessor:
@@ -99,13 +116,10 @@ class InboxProcessor:
         self._deps = deps
 
     def unfinished(self) -> list[str]:
-        """Emails whose automatic actions a crash or an outage left unfinished, oldest first.
+        """Emails journalled but not yet audited and labelled processed, oldest first.
 
-        They resume by message id, because an archived email no longer matches the inbox query.
-        An approval's actions are the approval loop's to run, so they are left out."""
-        unfinished = self._deps.store.actions_unfinished()
-        owners = (record.source_message_id for record in unfinished if record.approval_id is None)
-        return list(dict.fromkeys(owners))
+        They resume by message id, because an archived email no longer matches the inbox query."""
+        return [entry.source_message_id for entry in self._deps.store.journal_incomplete()]
 
     def process(self, message_id: str) -> AuditLine | None:
         """None means the email is not AECA's to classify: it was skipped.
@@ -117,26 +131,38 @@ class InboxProcessor:
         try:
             raw = self._deps.mailbox.get(message_id)
             if PROCESSED in raw.label_ids:
+                # A kill between the label and the journal's completion lands here on resume.
+                self._deps.store.journal_complete(message_id)
                 return None
             known_facts = extract_facts(raw, self._deps.settings.facts)
-            if self._is_skipped(known_facts):
-                return None
-            return self._finish(known_facts, spend_before)
+            return self._process_unprocessed(known_facts, spend_before)
         except Exception as error:
             if ends_the_tick(error):
                 raise
             spend = self._deps.budget.spent - spend_before
-            return self._record_failure(_Failure(message_id, known_facts, error, spend))
+            failure = _Failure(message_id=message_id, facts=known_facts, error=error, spend=spend)
+            return self._record_failure(failure)
 
-    def _is_skipped(self, facts: EmailFacts) -> bool:
+    def _process_unprocessed(self, facts: EmailFacts, spend_before: Spend) -> AuditLine | None:
         if facts.aeca_kind is not None and facts.sent_by_account:
             self._mark_processed(facts)
-            return True
-        # The manager's answer is left unlabelled for the approval loop, which reads it.
-        return self._deps.store.approval_by_request_thread(facts.thread_id) is not None
+            return None
+        thread = tuple(self._deps.mailbox.thread_summaries(facts.thread_id))
+        incoming = _Incoming(facts=facts, thread=thread)
+        if self._is_approval_thread(incoming):
+            return None
+        return self._finish(incoming, spend_before)
 
-    def _finish(self, facts: EmailFacts, spend_before: Spend) -> AuditLine:
-        entry = self._journal_entry(facts)
+    # By the thread's first message, which holds without any state (spec §4.5), and by the store.
+    # The manager's answer is left unlabelled for the approval loop, which reads it.
+    def _is_approval_thread(self, incoming: _Incoming) -> bool:
+        if _starts_with_an_approval_request(incoming.thread):
+            return True
+        return self._deps.store.approval_by_request_thread(incoming.facts.thread_id) is not None
+
+    def _finish(self, incoming: _Incoming, spend_before: Spend) -> AuditLine:
+        facts = incoming.facts
+        entry = self._journal_entry(incoming)
         approval = self._carry_out(facts, entry)
         finished = _Finished(
             facts=facts,
@@ -145,21 +171,26 @@ class InboxProcessor:
             spend=self._deps.budget.spent - spend_before,
         )
         line = _done_line(self._deps.clock.now(), finished)
-        self._deps.audit.write(line)
+        if not entry.audited:
+            self._deps.audit.write(line)
+            self._deps.store.journal_audited(facts.message_id)
         self._mark_processed(facts)
+        self._deps.store.journal_complete(facts.message_id)
         return line
 
     # The journal's first write wins, so a resume works from the decision already recorded.
-    def _journal_entry(self, facts: EmailFacts) -> JournalEntry:
-        recorded = self._deps.store.journal_get(facts.message_id)
+    def _journal_entry(self, incoming: _Incoming) -> JournalEntry:
+        message_id = incoming.facts.message_id
+        recorded = self._deps.store.journal_get(message_id)
         if recorded is not None:
-            self._deps.tracer.event("email_resumed", message_id=facts.message_id)
+            self._deps.tracer.event("email_resumed", message_id=message_id)
             return recorded
-        entry = self._planned_entry(facts)
+        entry = self._planned_entry(incoming)
         self._deps.store.journal_record(entry)
         return entry
 
-    def _planned_entry(self, facts: EmailFacts) -> JournalEntry:
+    def _planned_entry(self, incoming: _Incoming) -> JournalEntry:
+        facts = incoming.facts
         decision = self._deps.decide(facts)
         meeting = self._plan_meeting(facts, decision)
         plan = plan_actions(
@@ -168,7 +199,7 @@ class InboxProcessor:
                 facts=facts,
                 meeting=meeting,
                 settings=self._deps.settings.policy,
-                reply_block=self._reply_block(facts, decision),
+                reply_block=self._reply_block(incoming, decision),
             )
         )
         notes = (INVITATION_ON_CALENDAR,) if isinstance(meeting, AlreadyOnCalendar) else ()
@@ -193,19 +224,13 @@ class InboxProcessor:
             )
         )
 
-    def _reply_block(self, facts: EmailFacts, decision: Decision) -> str | None:
+    def _reply_block(self, incoming: _Incoming, decision: Decision) -> str | None:
         context = ReplyContext(
             label=decision.label,
             account_address=self._deps.settings.facts.account_address,
-            thread_has_unapproved_reply=self._thread_has_unapproved_reply(facts.thread_id),
+            thread_has_unapproved_reply=_has_an_unapproved_reply(incoming.thread),
         )
-        return reply_block_reason(facts, context)
-
-    def _thread_has_unapproved_reply(self, thread_id: str) -> bool:
-        return any(
-            SENT in summary.label_ids and summary.aeca_kind in UNAPPROVED_REPLY_KINDS
-            for summary in self._deps.mailbox.thread_summaries(thread_id)
-        )
+        return reply_block_reason(incoming.facts, context)
 
     # The approval is opened before the email leaves the Inbox: the verbs that remove it run last
     # (spec §4.2), and a crash after an archive leaves those still pending for a resume to find,
@@ -229,10 +254,14 @@ class InboxProcessor:
             )
         )
         stored = self._deps.store.approval_get(opened_id)
-        state = ApprovalState.AWAITING if stored is None else stored.state
-        if state is ApprovalState.AWAITING:
+        if stored is None:
+            raise EmailError(
+                f"the approval opener returned {opened_id}, which the state store does not hold",
+                next_action="Fix the approval opener: it must save the approval it opens",
+            )
+        if stored.state is ApprovalState.AWAITING:
             self._deps.mailbox.modify(facts.message_id, add=[AWAITING], remove=[])
-        return _OpenedApproval(id=opened_id, state=state)
+        return _OpenedApproval(id=opened_id, state=stored.state)
 
     def _progress_of(self, entry: JournalEntry) -> _Progress:
         planned = (*entry.actions, *entry.awaiting_approval)
@@ -256,7 +285,7 @@ class InboxProcessor:
         try:
             attempts = self._deps.store.attempts_increment(failure.message_id)
             if attempts >= MAX_TRIES:
-                self._give_up_unfinished_actions(failure.message_id)
+                self._give_up(failure.message_id)
             line = _failed_line(self._deps.clock.now(), self._with_progress(failure))
             self._deps.audit.write(line)
             labels = [ERROR, PROCESSED] if attempts >= MAX_TRIES else [ERROR]
@@ -279,15 +308,44 @@ class InboxProcessor:
 
     def _with_progress(self, failure: _Failure) -> _Failure:
         entry = self._deps.store.journal_get(failure.message_id)
-        return failure if entry is None else replace(failure, progress=self._progress_of(entry))
+        if entry is None:
+            return failure
+        return replace(
+            failure,
+            progress=self._progress_of(entry),
+            approval=self._approval_of(failure.message_id),
+        )
+
+    # Approval ids derive from the source message and the attempt (spec §4.5), and an email from
+    # the inbox is on its first attempt, so the approval is found without asking the opener.
+    def _approval_of(self, message_id: str) -> _OpenedApproval | None:
+        stored = self._deps.store.approval_get(approval_id(message_id, FIRST_ATTEMPT))
+        return None if stored is None else _OpenedApproval(id=stored.id, state=stored.state)
 
     # Done before the labels, so that an email Gmail can no longer label still stops being resumed.
-    def _give_up_unfinished_actions(self, message_id: str) -> None:
+    def _give_up(self, message_id: str) -> None:
         entry = self._deps.store.journal_get(message_id)
         for action in entry.actions if entry is not None else ():
             record = self._deps.store.action_get(action.key)
             if record is not None and record.status in UNFINISHED_STATUSES:
                 self._deps.store.action_update(action.key, ActionStatus.FAILED)
+        self._deps.store.journal_complete(message_id)
+
+
+def _starts_with_an_approval_request(thread: tuple[MessageSummary, ...]) -> bool:
+    if not thread:
+        return False
+    first = thread[0]
+    return SENT in first.label_ids and first.aeca_kind == APPROVAL_REQUEST_KIND
+
+
+# An approved reply carries a kind of its own, so only an automatic one uses up the thread's one
+# unapproved reply (spec §4.3).
+def _has_an_unapproved_reply(thread: tuple[MessageSummary, ...]) -> bool:
+    return any(
+        SENT in summary.label_ids and summary.aeca_kind in AUTOMATIC_REPLY_KINDS
+        for summary in thread
+    )
 
 
 def _done_line(now: datetime, finished: _Finished) -> AuditLine:
@@ -315,7 +373,7 @@ def _done_line(now: datetime, finished: _Finished) -> AuditLine:
 
 
 def _failed_line(now: datetime, failure: _Failure) -> AuditLine:
-    facts, progress = failure.facts, failure.progress
+    facts, progress, approval = failure.facts, failure.progress, failure.approval
     journalled = progress.journalled if progress is not None else None
     return AuditLine(
         time=now,
@@ -328,8 +386,8 @@ def _failed_line(now: datetime, failure: _Failure) -> AuditLine:
         decided_by=journalled.decided_by if journalled else "",
         rules=journalled.rules_fired + journalled.notes if journalled else (),
         actions=progress.actions if progress is not None else (),
-        approval_id=None,
-        approval_state=None,
+        approval_id=None if approval is None else approval.id,
+        approval_state=None if approval is None else approval.state.value,
         outcome=Outcome.FAILED,
         error=bounded(describe(failure.error), ERROR_TEXT_LIMIT),
         tokens_in=failure.spend.tokens_in,

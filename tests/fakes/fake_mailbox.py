@@ -50,6 +50,11 @@ class FakeMailbox:
         self.modify_failures: list[Exception] = []
         # Failures raised by the next calls to send_draft(), in order, before anything is sent.
         self.send_failures: list[Exception] = []
+        # Failures raised by the next calls to thread_summaries(), in order.
+        self.thread_failures: list[Exception] = []
+        # Failures raised once each, by the first modify of that message that changes that label.
+        self._targeted_modify_failures: list[tuple[str, str, Exception]] = []
+        self.recent_sent_reads: list[int] = []
         # What unprocessed_inbox returns instead of the messages themselves: a stale listing.
         self.listing_override: list[str] | None = None
         self.listing_failures: list[Exception] = []
@@ -73,6 +78,10 @@ class FakeMailbox:
         return [
             label for call in self.modify_log if call.message_id == message_id for label in call.add
         ]
+
+    def fail_next_modify(self, message_id: str, *, changing: str, error: Exception) -> None:
+        """The first later modify of that message that adds or removes the label raises."""
+        self._targeted_modify_failures.append((message_id, changing, error))
 
     def sent_to(self, address: str) -> list[OutgoingMessage]:
         return [message for message in self.sent if message.to == address]
@@ -103,6 +112,8 @@ class FakeMailbox:
 
     def thread_summaries(self, thread_id: str) -> list[MessageSummary]:
         self.thread_reads.append(thread_id)
+        if self.thread_failures:
+            raise self.thread_failures.pop(0)
         in_thread = [raw for raw in self._messages.values() if raw.thread_id == thread_id]
         # sorted is stable, so messages received at the same instant keep their arrival order.
         return [_summary_of(raw) for raw in sorted(in_thread, key=lambda raw: raw.internal_date)]
@@ -114,6 +125,7 @@ class FakeMailbox:
         self.modify_log.append(ModifyCall(message_id, tuple(add), tuple(remove)))
         if self.modify_failures:
             raise self.modify_failures.pop(0)
+        self._raise_a_targeted_failure(message_id, (*add, *remove))
         message = self._messages.get(message_id)
         if message is None:
             raise EmailError(f"no message {message_id}", next_action="none")
@@ -122,6 +134,18 @@ class FakeMailbox:
         labels = (message.label_ids | set(add)) - set(remove)
         self._messages[message_id] = replace(message, label_ids=frozenset(labels))
         self._after_write(entry)
+
+    def recently_sent_with_aeca_id(self, aeca_id: str, limit: int) -> str | None:
+        self.recent_sent_reads.append(limit)
+        sent = [raw for raw in self._messages.values() if SENT in raw.label_ids]
+        arrival = {raw.message_id: position for position, raw in enumerate(sent)}
+        newest_first = sorted(
+            sent, key=lambda raw: (raw.internal_date, arrival[raw.message_id]), reverse=True
+        )
+        return next(
+            (raw.message_id for raw in newest_first[:limit] if _summary_of(raw).aeca_id == aeca_id),
+            None,
+        )
 
     def create_draft(self, message: OutgoingMessage) -> str:
         draft_id = self._issue_id("draft")
@@ -176,6 +200,12 @@ class FakeMailbox:
     def _issue_id(self, prefix: str) -> str:
         self._ids_issued += 1
         return f"{prefix}-{self._ids_issued}"
+
+    def _raise_a_targeted_failure(self, message_id: str, changed: tuple[str, ...]) -> None:
+        for position, (target, label, error) in enumerate(self._targeted_modify_failures):
+            if target == message_id and label in changed:
+                del self._targeted_modify_failures[position]
+                raise error
 
     def _after_write(self, entry: str) -> None:
         if self.kill_after_entry is not None and entry.startswith(self.kill_after_entry):

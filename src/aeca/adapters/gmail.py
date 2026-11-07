@@ -14,6 +14,7 @@ from aeca.adapters.google_errors import classify, execute, execute_unless_missin
 from aeca.application.ports import MessageSummary
 from aeca.domain.email import RawEmail
 from aeca.domain.errors import EmailError
+from aeca.domain.labels import INBOX, SENT, SPAM_SYSTEM_LABEL, STARRED
 from aeca.domain.outgoing import OutgoingMessage, SentMessage
 
 # Day-1 spike: confirm this finds exactly the unprocessed Inbox mail. Gmail search writes the "/"
@@ -23,8 +24,9 @@ LIST_PAGE_SIZE = 500
 # A first run on a large inbox must not stall a tick on dozens of list calls. Oldest-first is kept
 # among the ids read; the newer ones are picked up on later ticks as the older ones get labelled.
 MAX_INBOX_IDS_PER_TICK = 2000
-SYSTEM_LABELS = frozenset({"INBOX", "SPAM", "STARRED", "UNREAD", "TRASH", "IMPORTANT", "SENT"})
+SYSTEM_LABELS = frozenset({INBOX, SPAM_SYSTEM_LABEL, STARRED, SENT, "UNREAD", "TRASH", "IMPORTANT"})
 SUMMARY_HEADERS = ["From", "X-AECA-Kind", "X-AECA-Id"]
+AECA_ID_HEADER = "X-AECA-Id"
 LABEL_ALREADY_EXISTS = 409
 USER = "me"
 
@@ -66,6 +68,14 @@ class GmailMailbox:
         messages = sorted(thread["messages"], key=lambda m: int(m["internalDate"]))
         return [_summary_of(message) for message in messages]
 
+    # The SENT label's own listing, newest first: unlike search, it does not lag behind a send.
+    def recently_sent_with_aeca_id(self, aeca_id: str, limit: int) -> str | None:
+        listed = execute(self._messages.list(userId=USER, labelIds=[SENT], maxResults=limit))
+        for entry in listed.get("messages", []):
+            if self._aeca_id_of(entry["id"]) == aeca_id:
+                return str(entry["id"])
+        return None
+
     def ensure_labels(self, names: Sequence[str]) -> None:
         for name in names:
             self._id_of(name)
@@ -93,6 +103,16 @@ class GmailMailbox:
     def send_draft(self, draft_id: str) -> SentMessage:
         reply = execute(self._drafts.send(userId=USER, body={"id": draft_id}))
         return SentMessage(message_id=str(reply["id"]), thread_id=str(reply["threadId"]))
+
+    def _aeca_id_of(self, message_id: str) -> str | None:
+        message = execute(
+            self._messages.get(
+                userId=USER, id=message_id, format="metadata", metadataHeaders=[AECA_ID_HEADER]
+            )
+        )
+        headers = message.get("payload", {}).get("headers", [])
+        wanted = AECA_ID_HEADER.lower()
+        return next((h["value"] for h in headers if h["name"].lower() == wanted), None)
 
     def _inbox_entries(self) -> list[dict[str, str]]:
         entries: list[dict[str, str]] = []

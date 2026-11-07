@@ -21,7 +21,9 @@ CREATE TABLE journal (
     source_message_id TEXT PRIMARY KEY,
     decision_json TEXT NOT NULL,
     actions_json TEXT NOT NULL,
-    awaiting_approval_json TEXT NOT NULL
+    awaiting_approval_json TEXT NOT NULL,
+    audited INTEGER NOT NULL DEFAULT 0,
+    complete INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE actions (
     key TEXT PRIMARY KEY,
@@ -60,6 +62,8 @@ CREATE TABLE spend (day TEXT PRIMARY KEY, usd TEXT NOT NULL);
 """
 
 _ACTION_COLUMNS = "key, verb, args_json, source_message_id, approval_id, status, ref"
+# Added to the version-1 journal before its layout was frozen; a file written earlier lacks them.
+_JOURNAL_FLAGS = ("audited", "complete")
 
 
 class SqliteState:
@@ -81,6 +85,7 @@ class SqliteState:
     def _prepare_schema(self, path: Path) -> None:
         found = self._connection.execute("PRAGMA user_version").fetchone()[0]
         if found == SCHEMA_VERSION:
+            self._add_missing_journal_flags()
             return
         if found != 0:
             raise AecaError(
@@ -99,6 +104,14 @@ class SqliteState:
                 ),
             )
         self._create_schema()
+
+    def _add_missing_journal_flags(self) -> None:
+        present = {row["name"] for row in self._connection.execute("PRAGMA table_info(journal)")}
+        for flag in _JOURNAL_FLAGS:
+            if flag not in present:
+                self._connection.execute(
+                    f"ALTER TABLE journal ADD COLUMN {flag} INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _holds_any_table(self) -> bool:
         row = self._connection.execute(
@@ -141,19 +154,16 @@ class SqliteState:
         ).fetchone()
         if row is None:
             return None
-        return JournalEntry(
-            source_message_id=row["source_message_id"],
-            decision_json=row["decision_json"],
-            actions=_actions_from_json(row["actions_json"]),
-            awaiting_approval=_actions_from_json(row["awaiting_approval_json"]),
-        )
+        return _journal_entry_from(row)
 
     # First write wins: the journal is the decision of record, and a second decision for the same
     # email must never replace the actions that may already have run.
     def journal_record(self, entry: JournalEntry) -> None:
         with self._transaction() as connection:
             inserted = connection.execute(
-                "INSERT OR IGNORE INTO journal VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO journal"
+                " (source_message_id, decision_json, actions_json, awaiting_approval_json)"
+                " VALUES (?, ?, ?, ?)",
                 (
                     entry.source_message_id,
                     entry.decision_json,
@@ -163,6 +173,25 @@ class SqliteState:
             )
             if inserted.rowcount == 1:
                 self._register_actions(entry.actions, entry.source_message_id, approval_id=None)
+
+    def journal_audited(self, source_message_id: str) -> None:
+        with self._transaction() as connection:
+            connection.execute(
+                "UPDATE journal SET audited = 1 WHERE source_message_id = ?", (source_message_id,)
+            )
+
+    def journal_complete(self, source_message_id: str) -> None:
+        with self._transaction() as connection:
+            connection.execute(
+                "UPDATE journal SET complete = 1 WHERE source_message_id = ?",
+                (source_message_id,),
+            )
+
+    def journal_incomplete(self) -> list[JournalEntry]:
+        rows = self._connection.execute(
+            "SELECT * FROM journal WHERE complete = 0 ORDER BY rowid"
+        ).fetchall()
+        return [_journal_entry_from(row) for row in rows]
 
     def action_get(self, key: str) -> ActionRecord | None:
         row = self._connection.execute(
@@ -417,6 +446,16 @@ def _interval_to_json(interval: Interval) -> list[str]:
 
 def _interval_from_json(pair: list[str]) -> Interval:
     return Interval(start=datetime.fromisoformat(pair[0]), end=datetime.fromisoformat(pair[1]))
+
+
+def _journal_entry_from(row: sqlite3.Row) -> JournalEntry:
+    return JournalEntry(
+        source_message_id=row["source_message_id"],
+        decision_json=row["decision_json"],
+        actions=_actions_from_json(row["actions_json"]),
+        awaiting_approval=_actions_from_json(row["awaiting_approval_json"]),
+        audited=bool(row["audited"]),
+    )
 
 
 def _action_record_from(row: sqlite3.Row) -> ActionRecord:

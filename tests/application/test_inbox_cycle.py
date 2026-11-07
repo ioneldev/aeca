@@ -11,8 +11,8 @@ from support.inbox_rig import InboxRig
 from aeca.application.process_email import MAX_TRIES
 from aeca.application.service import Service, ServiceDeps
 from aeca.domain.approval import Approval, ApprovalState
-from aeca.domain.errors import EmailError
-from aeca.domain.labels import ERROR, PROCESSED, Label
+from aeca.domain.errors import EmailError, SystemWideError
+from aeca.domain.labels import ERROR, PROCESSED, Label, ReplyKind
 
 POISON_SUBJECT = "poison"
 MANAGER = "boss@example.com"
@@ -82,6 +82,47 @@ def test_unfinished_work_of_an_archived_email_is_finished_by_the_next_tick(
     assert result.processed == 1
     assert [line.message_id for line in console.emails] == ["newsletter"]
     assert PROCESSED in rig.mailbox.labels_of("newsletter")
+
+
+def test_a_kill_after_the_archive_and_before_the_audit_is_finished_on_the_next_tick(
+    tmp_path: Path,
+) -> None:
+    rig = InboxRig(tmp_path)
+    rig.next_decision = decision_of(Label.MARKETING, reply=ReplyKind.ACKNOWLEDGEMENT)
+    rig.receive(message_id="newsletter", sender="news@shop.example")
+    rig.audit.failure = Killed()
+    with pytest.raises(Killed):
+        service_of(rig)[0].tick()
+    rig.restart()
+    rig.audit.failure = None
+    service, _ = service_of(rig)
+
+    result = service.tick()
+
+    assert result.processed == 1
+    assert [line.message_id for line in rig.audit.lines] == ["newsletter"]
+    assert rig.mailbox.labels_of("newsletter") == {"MARKETING", PROCESSED}
+    assert [message.kind for message in rig.mailbox.sent] == ["acknowledgement"]
+    assert rig.processor.unfinished() == []
+
+
+def test_a_transient_failure_of_the_final_modify_is_finished_on_the_next_tick(
+    tmp_path: Path,
+) -> None:
+    rig = InboxRig(tmp_path)
+    rig.next_decision = decision_of(Label.MARKETING, reply=ReplyKind.ACKNOWLEDGEMENT)
+    rig.receive(message_id="newsletter", sender="news@shop.example")
+    outage = SystemWideError("Gmail answered 503", next_action="wait")
+    rig.mailbox.fail_next_modify("newsletter", changing=PROCESSED, error=outage)
+    service, _ = service_of(rig)
+
+    first, second = service.tick(), service.tick()
+
+    assert (first.backoff_s, second.processed) == (30, 1)
+    assert PROCESSED in rig.mailbox.labels_of("newsletter")
+    assert [line.message_id for line in rig.audit.lines] == ["newsletter"]
+    assert [message.kind for message in rig.mailbox.sent] == ["acknowledgement"]
+    assert rig.processor.unfinished() == []
 
 
 def waiting_approval(number: int) -> Approval:

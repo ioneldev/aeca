@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from aeca.domain.facts import EmailFacts
+from aeca.domain.labels import ReplyKind
 from aeca.domain.outgoing import OutgoingMessage
 from aeca.domain.time_range import Interval
 
@@ -18,6 +19,12 @@ REPLY_PREFIX = re.compile(r"re:", re.IGNORECASE)
 ANSWER_WORD_AT_LINE_START = re.compile(r"^(\s*)(?=(?:APPROVE|REJECT))", re.IGNORECASE)
 URGENT_NOTICE_KIND = "urgent-notice"
 NOTICE_SUBJECT_PREFIX = "[AECA] Urgent: "
+# The first message of an approval thread carries this kind (spec §4.5).
+APPROVAL_REQUEST_KIND = "approval-request"
+# The reply kinds AECA sends without approval: one of them in a thread uses up the thread's
+# unapproved reply (spec §4.3). Sent after an approval, they carry APPROVED_PREFIX, so they don't.
+AUTOMATIC_REPLY_KINDS = frozenset(kind.value for kind in ReplyKind if kind is not ReplyKind.NONE)
+APPROVED_PREFIX = "approved-"
 
 
 @dataclass(frozen=True, slots=True)

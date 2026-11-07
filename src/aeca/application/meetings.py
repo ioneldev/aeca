@@ -44,7 +44,7 @@ def plan_meeting(request: MeetingRequest) -> MeetingOutcome | None:
     if invitation is not None:
         return AlreadyOnCalendar(event_id=invitation.id)
     duration = meeting_duration(meeting, request.settings)
-    return _free_proposed_slot(request, meeting, duration) or NoSlotFree(
+    return _free_proposed_slot(request, meeting=meeting, duration=duration) or NoSlotFree(
         alternatives=_alternatives(request, duration)
     )
 
@@ -58,7 +58,7 @@ def _invitation_on_calendar(request: MeetingRequest) -> CalendarEvent | None:
 
 
 def _free_proposed_slot(
-    request: MeetingRequest, meeting: Meeting, duration: timedelta
+    request: MeetingRequest, *, meeting: Meeting, duration: timedelta
 ) -> SlotFree | None:
     if not meeting.windows:
         return None

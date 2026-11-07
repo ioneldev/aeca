@@ -106,3 +106,35 @@ def test_every_reply_goes_to_the_original_sender_in_its_thread() -> None:
 def test_an_action_with_no_message_is_refused(action: Action) -> None:
     with pytest.raises(ValueError, match="k-1"):
         compose_message(ComposeRequest(action=action, facts=FACTS, manager_address=MANAGER))
+
+
+@pytest.mark.parametrize(
+    ("template", "approved", "kind"),
+    [
+        ("decline", True, "approved-decline"),
+        ("acknowledgement", True, "approved-acknowledgement"),
+        ("decline", False, "decline"),
+    ],
+)
+def test_an_approved_automatic_kind_is_marked_approved(
+    template: str, approved: bool, kind: str
+) -> None:
+    action = Action(verb=Verb.SEND_REPLY, key="k-1", args={"template": template})
+
+    message = compose_message(
+        ComposeRequest(action=action, facts=FACTS, manager_address=MANAGER, approved=approved)
+    )
+
+    assert message.kind == kind
+
+
+def test_an_approved_kind_that_is_already_distinct_is_kept() -> None:
+    action = Action(
+        verb=Verb.SEND_REPLY, key="k-1", args={"template": "confirmation", **slot_args(SLOT)}
+    )
+
+    message = compose_message(
+        ComposeRequest(action=action, facts=FACTS, manager_address=MANAGER, approved=True)
+    )
+
+    assert message.kind == "confirmation"

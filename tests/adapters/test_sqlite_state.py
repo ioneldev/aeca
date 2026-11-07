@@ -575,3 +575,56 @@ def test_saving_an_approval_again_keeps_its_place_in_the_awaiting_order(
     )
 
     assert [approval.id for approval in state.approvals_awaiting()] == ["a1", "a2"]
+
+
+# F3: an entry stays incomplete until its email is audited and labelled processed.
+
+
+def test_a_journal_entry_is_incomplete_until_it_is_completed(state: SqliteState) -> None:
+    state.journal_record(entry_of(label_action(), message_id="m1"))
+    state.journal_record(entry_of(label_action("m2:label"), message_id="m2"))
+
+    before = [entry.source_message_id for entry in state.journal_incomplete()]
+    state.journal_complete("m1")
+
+    assert before == ["m1", "m2"]
+    assert [entry.source_message_id for entry in state.journal_incomplete()] == ["m2"]
+
+
+def test_an_entry_remembers_that_its_audit_line_was_written(state: SqliteState) -> None:
+    state.journal_record(entry_of(label_action()))
+
+    unaudited = state.journal_get("m1")
+    state.journal_audited("m1")
+    audited = state.journal_get("m1")
+
+    assert unaudited is not None and unaudited.audited is False
+    assert audited is not None and audited.audited is True
+    assert [entry.audited for entry in state.journal_incomplete()] == [True]
+
+
+def test_completing_or_auditing_a_message_with_no_entry_is_harmless(state: SqliteState) -> None:
+    state.journal_complete("never-journalled")
+    state.journal_audited("never-journalled")
+
+    assert state.journal_incomplete() == []
+
+
+def test_a_version_one_file_from_before_the_journal_flags_gains_them(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        "CREATE TABLE journal (source_message_id TEXT PRIMARY KEY, decision_json TEXT NOT NULL,"
+        " actions_json TEXT NOT NULL, awaiting_approval_json TEXT NOT NULL);"
+        "CREATE TABLE actions (key TEXT PRIMARY KEY, sequence INTEGER NOT NULL, verb TEXT NOT NULL,"
+        " args_json TEXT NOT NULL, source_message_id TEXT NOT NULL, approval_id TEXT,"
+        " status TEXT NOT NULL, ref TEXT);"
+        "PRAGMA user_version = 1;"
+    )
+    connection.close()
+
+    state = SqliteState(path)
+    state.journal_record(entry_of(label_action()))
+
+    assert [entry.source_message_id for entry in state.journal_incomplete()] == ["m1"]
+    assert user_version_of(path) == 1

@@ -17,14 +17,14 @@ from aeca.domain.actions import Action, ActionRecord, ActionStatus, Verb
 from aeca.domain.compose import ComposeRequest, compose_message
 from aeca.domain.errors import EmailError
 from aeca.domain.facts import EmailFacts
-from aeca.domain.labels import PROCESSED
+from aeca.domain.labels import INBOX, PROCESSED, SENT, SPAM_SYSTEM_LABEL, STARRED
 from aeca.domain.outgoing import OutgoingMessage
 
-INBOX = "INBOX"
-SENT = "SENT"
-STARRED = "STARRED"
-SPAM_SYSTEM_LABEL = "SPAM"
 SENDING_VERBS = frozenset({Verb.SEND_REPLY, Verb.NOTIFY_MANAGER})
+# A message in a thread of its own has no thread to look in once the state file is lost, so the
+# account's most recent sent mail is read instead, through the SENT label's index, which does not
+# lag as search does. The known limit: a send older than this many sent messages is not found.
+RECENT_SENT_SEARCHED = 25
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,9 @@ class ActionFailed(EmailError):
     """One action failed for this email alone. It is marked failed, the actions after it stay
     pending, and records holds every action of the run as the store now has it."""
 
-    def __init__(self, action: Action, records: tuple[ActionRecord, ...], cause: Exception) -> None:
+    def __init__(
+        self, action: Action, *, records: tuple[ActionRecord, ...], cause: Exception
+    ) -> None:
         super().__init__(
             f"{action.verb.value} failed: {describe(cause)}",
             next_action="AECA retries the email on the next polls; see trace.jsonl",
@@ -76,7 +78,7 @@ class Executor:
                 self._run_once(record, source)
         except _StepFailed as failed:
             records = self._records_of(actions)
-            raise ActionFailed(failed.action, records, failed.cause) from failed.cause
+            raise ActionFailed(failed.action, records=records, cause=failed.cause) from failed.cause
         return self._records_of(actions)
 
     def _recorded(self, action: Action) -> ActionRecord:
@@ -117,14 +119,21 @@ class Executor:
     def _send_once(self, record: ActionRecord, source: EmailFacts) -> _Performed:
         if record.ref is not None:
             return self._finish_recorded_draft(record.ref)
-        action = record.action
-        if action.verb is Verb.SEND_REPLY:
-            already_sent = self._sent_in_thread(source.thread_id, action.key)
-            if already_sent is not None:
-                return _Performed(ref=already_sent)
-        draft_id = self._deps.mailbox.create_draft(self._message(action, source))
-        self._deps.store.action_update(action.key, ActionStatus.EXECUTING, ref=draft_id)
+        message = self._message(record, source)
+        already_sent = self._already_sent(message)
+        if already_sent is not None:
+            return _Performed(ref=already_sent)
+        draft_id = self._deps.mailbox.create_draft(message)
+        self._deps.store.action_update(record.action.key, ActionStatus.EXECUTING, ref=draft_id)
         return self._send_draft(draft_id)
+
+    # The store has no record of a draft, so this is a first send, or the state file was lost.
+    def _already_sent(self, message: OutgoingMessage) -> str | None:
+        if message.thread_id is None:
+            return self._deps.mailbox.recently_sent_with_aeca_id(
+                message.aeca_id, RECENT_SENT_SEARCHED
+            )
+        return self._sent_in_thread(message.thread_id, message.aeca_id)
 
     def _finish_recorded_draft(self, draft_id: str) -> _Performed:
         if self._deps.mailbox.draft_exists(draft_id):
@@ -146,9 +155,14 @@ class Executor:
             None,
         )
 
-    def _message(self, action: Action, source: EmailFacts) -> OutgoingMessage:
+    def _message(self, record: ActionRecord, source: EmailFacts) -> OutgoingMessage:
         return compose_message(
-            ComposeRequest(action=action, facts=source, manager_address=self._deps.manager_address)
+            ComposeRequest(
+                action=record.action,
+                facts=source,
+                manager_address=self._deps.manager_address,
+                approved=record.approval_id is not None,
+            )
         )
 
     def _mark_failed(self, action: Action, error: Exception) -> None:

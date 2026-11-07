@@ -408,3 +408,39 @@ def test_the_inbox_listing_stops_at_the_cap_and_keeps_the_oldest_read() -> None:
         f"m{MAX_INBOX_IDS_PER_TICK - 2}",
         f"m{MAX_INBOX_IDS_PER_TICK - 3}",
     ]
+
+
+def sent_metadata(message_id: str, aeca_id: str | None) -> dict[str, Any]:
+    headers = [] if aeca_id is None else [{"name": "X-AECA-Id", "value": aeca_id}]
+    return {"id": message_id, "payload": {"headers": headers}}
+
+
+def test_recently_sent_reads_the_sent_label_and_stops_at_the_matching_aeca_id() -> None:
+    mailbox, stub = mailbox_with()
+    stub.reply("users.messages.list", {"messages": [{"id": "s3"}, {"id": "s2"}, {"id": "s1"}]})
+    stub.reply(
+        "users.messages.get",
+        sent_metadata("s3", "k-other"),
+        sent_metadata("s2", "k-1"),
+        sent_metadata("s1", "k-1"),
+    )
+
+    found = mailbox.recently_sent_with_aeca_id("k-1", 25)
+
+    assert found == "s2"
+    assert stub.calls_to("users.messages.list") == [
+        {"userId": "me", "labelIds": ["SENT"], "maxResults": 25}
+    ]
+    assert stub.calls_to("users.messages.get") == [
+        {"userId": "me", "id": message_id, "format": "metadata", "metadataHeaders": ["X-AECA-Id"]}
+        for message_id in ("s3", "s2")
+    ]
+
+
+def test_recently_sent_finds_nothing_in_an_empty_or_unmatched_sent_folder() -> None:
+    mailbox, stub = mailbox_with()
+    stub.reply("users.messages.list", {}, {"messages": [{"id": "s1"}]})
+    stub.reply("users.messages.get", sent_metadata("s1", None))
+
+    assert mailbox.recently_sent_with_aeca_id("k-1", 25) is None
+    assert mailbox.recently_sent_with_aeca_id("k-1", 25) is None

@@ -65,14 +65,18 @@ class InboxRig:
         state_dir.mkdir(parents=True, exist_ok=True)
         self._volumes = 0
         # Outlives a restart, as the manager's mailbox would; None means the deferred opener.
-        self.recording_approvals: RecordingApprovalOpener | None = None
+        self._approvals_in_use: ApprovalOpener | None = None
         self.store = self._new_volume()
         self.processor = self._build()
 
     def record_approvals(self) -> RecordingApprovalOpener:
-        self.recording_approvals = RecordingApprovalOpener(self.journal)
+        recording = RecordingApprovalOpener(self.store, self.journal)
+        self.use_approvals(recording)
+        return recording
+
+    def use_approvals(self, opener: ApprovalOpener) -> None:
+        self._approvals_in_use = opener
         self.processor = self._build()
-        return self.recording_approvals
 
     def receive(self, **email: object) -> str:
         raw = make_raw(**email)  # type: ignore[arg-type]
@@ -132,8 +136,8 @@ class InboxRig:
         )
 
     def _approvals(self) -> ApprovalOpener:
-        if self.recording_approvals is not None:
-            return self.recording_approvals
+        if self._approvals_in_use is not None:
+            return self._approvals_in_use
         return DeferredApprovalOpener(self.store, self.tracer)
 
     def _decide(self, facts: EmailFacts) -> Decision:

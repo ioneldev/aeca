@@ -16,6 +16,7 @@ from aeca.domain.email import (
     calendar_uid,
     parse_message,
 )
+from aeca.domain.labels import SENT
 from aeca.domain.links import Link, extract_links
 from aeca.domain.text import bounded, html_to_text, visible
 
@@ -73,7 +74,7 @@ class EmailFacts:
 
     @property
     def sent_by_account(self) -> bool:
-        return "SENT" in self.label_ids
+        return SENT in self.label_ids
 
 
 def extract_facts(raw: RawEmail, settings: FactSettings) -> EmailFacts:

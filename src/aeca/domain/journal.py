@@ -15,6 +15,8 @@ class JournalEntry:
     # Kept in the journal so a resume can reopen the approval, and never registered as actions:
     # nothing may run them before the manager approves.
     awaiting_approval: tuple[Action, ...] = ()
+    # The email's audit line is written: a resume must not write a second one.
+    audited: bool = False
 
 
 @dataclass(frozen=True)

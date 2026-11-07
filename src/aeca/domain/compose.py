@@ -3,7 +3,7 @@ so a resume writes the same message the first run would have."""
 
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -11,6 +11,8 @@ from aeca.domain.actions import Action, Verb
 from aeca.domain.facts import EmailFacts
 from aeca.domain.outgoing import OutgoingMessage
 from aeca.domain.templates import (
+    APPROVED_PREFIX,
+    AUTOMATIC_REPLY_KINDS,
     ReplyRequest,
     UrgentNotice,
     acknowledgement,
@@ -29,6 +31,8 @@ class ComposeRequest:
     action: Action
     facts: EmailFacts
     manager_address: str
+    # True when the manager approved the action: its reply must not count as an unapproved one.
+    approved: bool = False
 
 
 def compose_message(request: ComposeRequest) -> OutgoingMessage:
@@ -36,8 +40,15 @@ def compose_message(request: ComposeRequest) -> OutgoingMessage:
     if action.verb is Verb.NOTIFY_MANAGER:
         return _urgent_notice(request)
     if action.verb is Verb.SEND_REPLY:
-        return _reply(action, ReplyRequest(facts=request.facts, aeca_id=action.key))
+        reply = _reply(action, ReplyRequest(facts=request.facts, aeca_id=action.key))
+        return _marked_approved(reply) if request.approved else reply
     raise ValueError(f"action {action.key} ({action.verb.value}) sends no message")
+
+
+def _marked_approved(reply: OutgoingMessage) -> OutgoingMessage:
+    if reply.kind not in AUTOMATIC_REPLY_KINDS:
+        return reply
+    return replace(reply, kind=f"{APPROVED_PREFIX}{reply.kind}")
 
 
 def _reply(action: Action, request: ReplyRequest) -> OutgoingMessage:

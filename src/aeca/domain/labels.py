@@ -10,6 +10,12 @@ PROCESSED = "AECA/processed"
 ERROR = "AECA/error"
 AWAITING = "AECA/awaiting"
 
+# Gmail's own labels, which AECA reads and sets but never creates.
+INBOX = "INBOX"
+SENT = "SENT"
+STARRED = "STARRED"
+SPAM_SYSTEM_LABEL = "SPAM"
+
 # Gmail refuses a user label named SPAM, so SPAM is not here: its action is the system label.
 ALL_USER_LABELS = (
     "MEETING_REQUEST",

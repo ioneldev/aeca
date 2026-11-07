@@ -210,14 +210,14 @@ def _days_to_search(now: datetime, settings: PlanSettings) -> Iterator[date]:
     offered = 0
     for offset in range(settings.alternative_days * DAYS_IN_A_WEEK + 1):
         day = today + timedelta(days=offset)
-        if _has_working_time_left(day, now, settings):
+        if _has_working_time_left(day, now=now, settings=settings):
             yield day
             offered += 1
             if offered == settings.alternative_days:
                 return
 
 
-def _has_working_time_left(day: date, now: datetime, settings: PlanSettings) -> bool:
+def _has_working_time_left(day: date, *, now: datetime, settings: PlanSettings) -> bool:
     if day.weekday() not in settings.work_hours.days:
         return False
     _, closing = _work_day_boundaries(day, settings)
