@@ -18,7 +18,7 @@ MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY = range(5)
 
 class SeedCalendar(Protocol):
     def insert(self, event: SeedEvent) -> SeedInsert:
-        """created is False when an event with this id was already there."""
+        """created is False when a live event with this id was already there."""
         ...
 
 

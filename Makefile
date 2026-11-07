@@ -1,4 +1,4 @@
-.PHONY: check preflight image auth start stop logs audit approvals eval seed-calendar rehearse
+.PHONY: check preflight image auth start stop logs audit approvals eval seed-calendar rehearse reset-test
 
 # What CI and a reviewer run. Tests marked live or eval touch the network or cost money, so they
 # never run here.
@@ -62,6 +62,8 @@ approvals:
 #   make eval           PAID: decides every corpus email for real, and reports accuracy and cost
 #   make seed-calendar  fills next week of the real calendar with events tagged [AECA test]
 #   make rehearse       sends the plain deliverable corpus emails through Mail.app, from the two rehearsal addresses
+#   make reset-test     shows what the rehearsal left in the account; ARGS=--yes moves its mail to Trash
+#                       and cancels its events
 eval:
 	@$(PREFLIGHT) env-run
 	AECA_DATA_DIR=data uv run --env-file .env aeca eval
@@ -73,3 +75,7 @@ seed-calendar:
 rehearse:
 	@$(PREFLIGHT) env-run
 	AECA_DATA_DIR=data uv run --env-file .env aeca rehearse
+
+reset-test:
+	@$(PREFLIGHT) env-run
+	AECA_DATA_DIR=data uv run --env-file .env aeca reset-test $(ARGS)

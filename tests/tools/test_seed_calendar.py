@@ -2,12 +2,16 @@ import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from fakes.fake_calendar_service import FakeCalendarService
 from fakes.memory_seed_calendar import MemorySeedCalendar
+from fakes.write_journal import WriteJournal
 
+from aeca.adapters.google_seed_calendar import GoogleSeedCalendar
 from aeca.tools.seed_calendar import SeedWeek, next_monday, seed_calendar
 
 BUCHAREST = ZoneInfo("Europe/Bucharest")
 MONDAY = date(2026, 11, 9)
+ACCOUNT = "aeca@gmail.test"
 
 
 def seed() -> MemorySeedCalendar:
@@ -150,3 +154,70 @@ def test_next_monday_reads_the_date_in_the_calendar_zone_not_utc() -> None:
     late_sunday_utc = datetime(2026, 11, 8, 23, 0, tzinfo=ZoneInfo("UTC"))  # Monday 01:00 local
 
     assert next_monday(late_sunday_utc, BUCHAREST) == date(2026, 11, 16)
+
+
+# After make reset-test the seeded events are cancelled, and Google answers 409 to an insert under a
+# cancelled id (measured 2026-11-07), so a second rehearsal's re-seed has to bring them back.
+
+
+def seeded_in_google() -> FakeCalendarService:
+    calendar = FakeCalendarService(journal=WriteJournal())
+    reseed(calendar)
+    calendar.journal.clear()
+    return calendar
+
+
+def cancel(calendar: FakeCalendarService, event_ids: list[str]) -> None:
+    for event_id in event_ids:
+        calendar.events().delete(calendarId="primary", eventId=event_id).execute()
+    calendar.journal.clear()
+
+
+def reseed(calendar: FakeCalendarService):  # type: ignore[no-untyped-def]
+    return seed_calendar(
+        GoogleSeedCalendar(calendar, ACCOUNT), SeedWeek(week_start=MONDAY, zone=BUCHAREST)
+    )
+
+
+def test_reseeding_a_week_a_reset_cancelled_brings_every_event_back_as_seeded() -> None:
+    calendar = seeded_in_google()
+    as_seeded = {event_id: dict(item) for event_id, item in calendar.stored.items()}
+    cancel(calendar, list(as_seeded))
+
+    report = reseed(calendar)
+
+    assert calendar.stored == as_seeded
+    assert sorted(report.created) == sorted(as_seeded) and report.skipped == []
+
+
+def test_the_tentative_seed_event_comes_back_tentative() -> None:
+    calendar = seeded_in_google()
+    cancel(calendar, list(calendar.stored))
+
+    reseed(calendar)
+
+    statuses = {item["summary"]: item["status"] for item in calendar.stored.values()}
+    assert statuses["[AECA test] Vendor call (tentative)"] == "tentative"
+    assert statuses["[AECA test] Weekly sync"] == "confirmed"
+
+
+def test_only_the_cancelled_events_are_rewritten() -> None:
+    calendar = seeded_in_google()
+    [first, *live] = list(calendar.stored)
+    cancel(calendar, [first])
+
+    report = reseed(calendar)
+
+    writes = calendar.journal.mutations()
+    assert [target for _, method, target in writes if method == "events.update"] == [first]
+    assert report.created == [first] and sorted(report.skipped) == sorted(live)
+
+
+def test_a_live_week_is_skipped_and_never_rewritten() -> None:
+    calendar = seeded_in_google()
+
+    report = reseed(calendar)
+
+    methods = {method for _, method, _ in calendar.journal.mutations()}
+    assert report.created == [] and len(report.skipped) == len(calendar.stored)
+    assert methods == {"events.insert"}

@@ -6,6 +6,8 @@ from enum import StrEnum
 
 # One value for both the lock and the health check, so they can never disagree on "stale".
 POLLS_BEFORE_A_HEARTBEAT_IS_STALE = 3
+# The X-AECA-Kind of the lock draft, which no rule may ever treat as mail AECA sent.
+LOCK_KIND = "lock"
 
 
 def stale_after(poll_seconds: float) -> timedelta:

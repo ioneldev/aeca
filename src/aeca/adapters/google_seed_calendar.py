@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Literal
 
-from aeca.adapters.google_calendar import CALENDAR_ID
-from aeca.adapters.google_errors import execute_unless_missing
+from aeca.adapters.google_calendar import CALENDAR_ID, MISSING_EVENT_STATUSES
+from aeca.adapters.google_errors import execute, execute_unless_missing
 
 
 @dataclass(frozen=True)
@@ -29,10 +29,12 @@ class SeedEvent:
 @dataclass(frozen=True)
 class SeedInsert:
     event_id: str
+    # True when this call made the event live: inserted it, or brought a cancelled one back.
     created: bool
 
 
 ALREADY_EXISTS = 409
+CANCELLED = "cancelled"
 
 
 class GoogleSeedCalendar:
@@ -41,11 +43,30 @@ class GoogleSeedCalendar:
         self._account_address = account_address
 
     def insert(self, event: SeedEvent) -> SeedInsert:
+        body = self._body(event)
         reply = execute_unless_missing(
-            self._events.insert(calendarId=CALENDAR_ID, body=self._body(event), sendUpdates="none"),
+            self._events.insert(calendarId=CALENDAR_ID, body=body, sendUpdates="none"),
             missing_statuses=(ALREADY_EXISTS,),
         )
-        return SeedInsert(event_id=event.event_id, created=reply is not None)
+        created = reply is not None or self._brought_back_if_cancelled(body)
+        return SeedInsert(event_id=event.event_id, created=created)
+
+    # make reset-test cancels the seeded events, and Google keeps a cancelled event's id, so the
+    # insert answers 409. Writing the seed body over it brings it back (measured 2026-11-07), which
+    # lets a second rehearsal re-seed the same week. A live event is left as it is.
+    def _brought_back_if_cancelled(self, body: dict[str, Any]) -> bool:
+        found = execute_unless_missing(
+            self._events.get(calendarId=CALENDAR_ID, eventId=body["id"]),
+            missing_statuses=MISSING_EVENT_STATUSES,
+        )
+        if found is None or found.get("status") != CANCELLED:
+            return False
+        execute(
+            self._events.update(
+                calendarId=CALENDAR_ID, eventId=body["id"], body=body, sendUpdates="none"
+            )
+        )
+        return True
 
     def _body(self, event: SeedEvent) -> dict[str, Any]:
         body: dict[str, Any] = {

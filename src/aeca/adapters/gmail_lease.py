@@ -13,6 +13,7 @@ from typing import Any
 from aeca.adapters.google_errors import execute, execute_unless_missing
 from aeca.domain.errors import LockLost
 from aeca.domain.lease import (
+    LOCK_KIND,
     LeaseHolding,
     LeaseOutcome,
     LeaseRequest,
@@ -21,7 +22,6 @@ from aeca.domain.lease import (
 )
 
 LOCK_SUBJECT = "AECA lock"
-LOCK_KIND = "lock"
 USER = "me"
 COPY_ID_FIELD = "copy_id"
 HEARTBEAT_FIELD = "heartbeat"
@@ -79,7 +79,7 @@ class GmailLease:
             self._lock_draft_id = None
             return None
         self._lock_draft_id = draft_id
-        return draft_id, _holding_of(reply)
+        return draft_id, lock_holding_of(reply)
 
     def _remembered_or_listed_lock(self) -> str | None:
         if self._lock_draft_id is not None:
@@ -134,7 +134,8 @@ def _lock_mime(holding: LeaseHolding) -> bytes:
     return mime.as_bytes()
 
 
-def _holding_of(reply: dict[str, Any]) -> LeaseHolding | None:
+def lock_holding_of(reply: dict[str, Any]) -> LeaseHolding | None:
+    """What a lock draft read with format=raw says, None when its body is unreadable."""
     raw = base64.urlsafe_b64decode(reply["message"]["raw"] + "==")
     body = message_from_bytes(raw, policy=policy.default).get_body(preferencelist=("plain",))
     if body is None:

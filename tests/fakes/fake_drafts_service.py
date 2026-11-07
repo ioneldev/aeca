@@ -28,6 +28,10 @@ class FakeDraftsService:
     calls: list[str] = field(default_factory=list)
     page_size: int = 100
     after_create: Callable[["FakeDraftsService"], None] | None = None
+    # Raised by every drafts.list, as a Gmail outage would.
+    list_failure: Exception | None = None
+    # Called before each drafts.list answers, so a test can change the drafts between two reads.
+    before_list: Callable[["FakeDraftsService"], None] | None = None
     _counter: int = 0
 
     def users(self) -> "FakeDraftsService":
@@ -84,6 +88,10 @@ class FakeDraftsService:
         return draft_id
 
     def _list(self, page_token: str | None) -> dict[str, Any]:
+        if self.list_failure is not None:
+            raise self.list_failure
+        if self.before_list is not None and page_token is None:
+            self.before_list(self)
         ids = [*self.stored]
         start = int(page_token or 0)
         page = ids[start : start + self.page_size]

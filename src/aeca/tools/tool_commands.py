@@ -1,4 +1,5 @@
-"""The `aeca eval`, `aeca seed-calendar` and `aeca rehearse` commands, which the Make targets run.
+"""The `aeca eval`, `aeca seed-calendar`, `aeca rehearse` and `aeca reset-test` commands, which the
+Make targets run.
 
 They print what they did by id and count, never an email's contents.
 """
@@ -20,6 +21,7 @@ from aeca.adapters.tracer import JsonlTracer
 from aeca.application.budget import Budget
 from aeca.application.decide import DecideDeps, decide
 from aeca.domain.errors import ConfigError
+from aeca.domain.reset_lock import reset_lock_window
 from aeca.domain.secret import SecretStr
 from aeca.settings import Settings, load_settings, require_rehearsal_senders
 from aeca.tools.corpus import corpus_message_id, load_corpus
@@ -32,6 +34,7 @@ from aeca.tools.evaluate import (
     write_report,
 )
 from aeca.tools.rehearse import MailAppSender, OsascriptRunner, plan_rehearsal, rehearse
+from aeca.tools.reset_test import ResetDeps, rehearsal_senders_to_reset, reset_test
 from aeca.tools.seed_calendar import SeedWeek, next_monday, seed_calendar
 
 DEFAULT_CORPUS = Path("tests/corpus/emails.json")
@@ -56,6 +59,12 @@ def add_tool_commands(subparsers: Any) -> None:
     rehearsal = subparsers.add_parser("rehearse", help="send the corpus as real mail")
     _add_corpus_option(rehearsal)
     rehearsal.set_defaults(handler=_rehearse)
+    resetting = subparsers.add_parser(
+        "reset-test",
+        help="move the rehearsal's mail to Trash and cancel its events (a dry run unless --yes)",
+    )
+    resetting.add_argument("--yes", action="store_true", help="apply the plan after printing it")
+    resetting.set_defaults(handler=_reset_test)
 
 
 def _add_corpus_option(parser: argparse.ArgumentParser) -> None:
@@ -195,3 +204,23 @@ def _rehearse(arguments: argparse.Namespace) -> int:
 
 def _announce_sent(email_id: str) -> None:
     print(f"sent {corpus_message_id(email_id)}", flush=True)
+
+
+def _reset_test(arguments: argparse.Namespace) -> int:
+    settings = load_settings(os.environ, purpose="tools")
+    senders = rehearsal_senders_to_reset(settings)
+    services = build_google_services(settings)
+    deps = ResetDeps(
+        mailbox=services.reset_mailbox,
+        calendar=services.reset_calendar,
+        account=settings.gmail_address,
+        senders=senders,
+        clock=SystemClock(),
+        lock_window=reset_lock_window(settings.poll_seconds),
+        show=_print_now,
+    )
+    return reset_test(deps, apply=arguments.yes)
+
+
+def _print_now(line: str) -> None:
+    print(line, flush=True)
