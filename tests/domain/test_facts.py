@@ -538,3 +538,34 @@ def test_a_single_listed_sender_with_dmarc_pass_is_still_internal():
     facts = extract_facts(raw_with_headers(COMPANY_PASS + "From: boss@company.com\r\n"), BOSS_ONLY)
 
     assert facts.internal
+
+
+# Ruling R42: a raw UTF-8 display name (charset defect only, on one well-formed address) is
+# accepted; any structural defect, or undecodable bytes in the address itself, is not.
+
+RAW_UTF8_NAME_LINES = [
+    "From: Jürgen Müller <boss@company.com>\r\n",
+    'From: "Jürgen Müller" <boss@company.com>\r\n',
+]
+RAW_UTF8_WITH_A_STRUCTURAL_DEFECT_LINES = [
+    "From: Jürgen <boss@company.com> attacker@company.com\r\n",
+    "From: boss@company.com ü <attacker@company.com>\r\n",
+    "From: Jü <boss@company.com>;attacker@company.com\r\n",
+    "From: Jü <boss@company.com>, Mü <attacker@company.com>\r\n",
+    "From: Boss <boss@company.comÿ>\r\n",
+]
+
+
+@pytest.mark.parametrize("from_line", RAW_UTF8_NAME_LINES)
+def test_a_raw_utf8_display_name_on_one_address_is_a_single_internal_sender(from_line):
+    facts = extract_facts(raw_with_headers(COMPANY_PASS + from_line), BOSS_ONLY)
+
+    assert (facts.single_sender, facts.sender, facts.internal) == (True, "boss@company.com", True)
+
+
+@pytest.mark.parametrize("from_line", RAW_UTF8_WITH_A_STRUCTURAL_DEFECT_LINES)
+def test_a_raw_utf8_name_with_a_structural_defect_is_still_refused(from_line):
+    facts = extract_facts(raw_with_headers(COMPANY_PASS + from_line), BOSS_ONLY)
+
+    assert not facts.single_sender
+    assert not facts.internal

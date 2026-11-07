@@ -1129,3 +1129,27 @@ def test_the_event_description_holds_the_quoted_times(rig: ApprovalRig) -> None:
     [event] = rig.calendar.inserted
     for text in ("Tuesday at 3pm", COLLEAGUE, "Sync?", rig.approval().id):
         assert text in event.description
+
+
+# Ruling R42: the evaluators write from Germany.
+
+
+def test_a_manager_reply_with_a_raw_utf8_display_name_counts(rig: ApprovalRig) -> None:
+    opened(rig)
+    reply_with_headers(rig, dmarc_pass_for("example.com") + f"From: Jürgen Müller <{MANAGER}>\r\n")
+
+    rig.tick()
+
+    assert_executed_once(rig)
+
+
+def test_a_raw_utf8_display_name_does_not_excuse_a_structural_defect(rig: ApprovalRig) -> None:
+    opened(rig)
+    forged = reply_with_headers(
+        rig, dmarc_pass_for("example.com") + f"From: Jürgen <{MANAGER}> attacker@example.com\r\n"
+    )
+
+    rig.tick()
+
+    assert_nothing_executed(rig)
+    assert only_line_about(rig, forged).rules == ("answer_ignored:sender_ambiguous",)

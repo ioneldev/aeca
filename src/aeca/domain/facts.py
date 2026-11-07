@@ -5,6 +5,7 @@ Pure code: nothing here asks the model or the network anything.
 
 from dataclasses import dataclass
 from datetime import datetime
+from email.errors import UndecodableBytesDefect
 from email.headerregistry import AddressHeader
 from email.message import EmailMessage
 
@@ -180,8 +181,10 @@ def _first_address(message: EmailMessage, header_name: str) -> tuple[str, str]:
         return "", ""
 
 
-# A defect means the parser dropped part of the header to find an address (for example
-# `boss@x <attacker@x>`), so the address read may not be the one Gmail judged DMARC for.
+# A structural defect means the parser dropped part of the header to find an address (for
+# example `boss@x <attacker@x>`), so the address read may not be the one Gmail judged DMARC for.
+# Undecodable bytes alone are a raw UTF-8 display name, which some clients send unencoded: they are
+# accepted (ruling R42), but only around an address that is itself plain ASCII.
 def _has_a_single_sender(message: EmailMessage) -> bool:
     try:
         headers = list(message.get_all("From", []))
@@ -191,7 +194,12 @@ def _has_a_single_sender(message: EmailMessage) -> bool:
         # The header registry mixes BaseHeader, which owns `defects`, into every header class; the
         # stubs don't say so. A header without it counts as defective.
         defects: tuple[object, ...] = getattr(header, "defects", (MISSING_DEFECTS,))
-        return not defects and len(header.addresses) == 1 and bool(header.addresses[0].addr_spec)
+        if not all(isinstance(defect, UndecodableBytesDefect) for defect in defects):
+            return False
+        if len(header.addresses) != 1:
+            return False
+        address = header.addresses[0].addr_spec
+        return bool(address) and address.isascii()
     except Exception:
         return False
 
