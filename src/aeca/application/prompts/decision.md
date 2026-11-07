@@ -41,6 +41,8 @@ so write no text for them.
 `urgent_draft` is the one reply you write yourself. Write it only when the email is urgent and its
 facts say `internal` is true, otherwise leave it empty. It is read by the manager before it goes
 out. Keep it polite and short, at most 800 characters, with no links and no email addresses.
+Write it in the manager's voice and sign nothing: it is sent exactly as written.
+For a `MEETING_REQUEST`, leave `urgent_draft` empty: code writes the reply to a meeting request.
 
 ## Meetings
 

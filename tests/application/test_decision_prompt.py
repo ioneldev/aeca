@@ -34,6 +34,10 @@ def test_the_system_prompt_gives_the_reply_rules() -> None:
     assert "exact quote" in prompt
 
 
+def test_the_system_prompt_tells_the_model_to_leave_the_urgent_draft_empty_for_a_meeting() -> None:
+    assert "For a `MEETING_REQUEST`, leave `urgent_draft` empty" in system_prompt()
+
+
 def test_the_system_prompt_is_stable_so_it_caches() -> None:
     assert system_prompt() == system_prompt()
     assert "{{" not in system_prompt()

@@ -249,3 +249,20 @@ def test_an_urgent_draft_recorded_without_a_quote_still_carries_the_notice() -> 
     body = requested(approval_with(without_quote)).body
 
     assert "looks urgent" in body and "Why it is urgent" not in body
+
+
+def test_the_request_of_an_urgent_meeting_carries_the_notice_and_the_quote() -> None:
+    urgent_confirmation = replace(
+        CONFIRMATION, args={**CONFIRMATION.args, "quote": "the call is today"}
+    )
+
+    body = requested(approval_with(EVENT, urgent_confirmation)).body
+
+    assert 'Why it is urgent: "the call is today"' in body
+    assert body.count("Thank you for your request. The meeting is confirmed for:") == 1
+
+
+def test_the_urgent_note_does_not_claim_a_separate_draft_below() -> None:
+    body = requested(approval_with(URGENT_DRAFT)).body
+
+    assert "is below" not in body

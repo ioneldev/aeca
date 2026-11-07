@@ -89,14 +89,38 @@ def _sender_may_book(context: PolicyContext) -> bool:
 def _urgent_draft_survives(context: PolicyContext) -> bool:
     return (
         context.decision.urgent_draft is not None
+        and context.decision.label is not Label.MEETING_REQUEST
         and context.facts.internal
         and context.reply_block not in REFUSED_EVEN_WITH_APPROVAL
         and context.reply_block != AUTOMATED_SENDER
     )
 
 
+def _meeting_approval_opens(context: PolicyContext) -> bool:
+    if _slot_free(context):
+        return True
+    reply_refused = context.reply_block in REFUSED_EVEN_WITH_APPROVAL
+    return _alternatives_available(context) and not reply_refused
+
+
+def _urgent_notice_rides_in_meeting_approval(context: PolicyContext) -> bool:
+    decision = context.decision
+    return (
+        decision.urgent
+        and context.facts.internal
+        and decision.label is Label.MEETING_REQUEST
+        and _meeting_approval_opens(context)
+    )
+
+
 def _urgent_notice_needed(context: PolicyContext) -> bool:
-    return context.facts.internal and not _urgent_draft_survives(context)
+    """The manager hears of an urgent internal email once: in the approval request when one is
+    opened for it, otherwise in a notice of its own."""
+    return (
+        context.facts.internal
+        and not _urgent_draft_survives(context)
+        and not _urgent_notice_rides_in_meeting_approval(context)
+    )
 
 
 PREDICATES: Mapping[str, Callable[[PolicyContext], bool]] = {
@@ -227,10 +251,18 @@ class _Planner:
 
     def _action(self, step: Step, *, gated: bool) -> Action:
         return _keyed(
-            _Unkeyed(verb=step.verb, args=self._args(step)),
+            _Unkeyed(verb=step.verb, args={**self._args(step), **self._riding_notice(gated=gated)}),
             source_message_id=self.context.facts.message_id,
             attempt=self.context.attempt if gated else None,
         )
+
+    def _riding_notice(self, *, gated: bool) -> dict[str, str]:
+        if not (gated and self._rides_with_meeting_approval()):
+            return {}
+        return {"quote": self.context.decision.urgent_quote or ""}
+
+    def _rides_with_meeting_approval(self) -> bool:
+        return not self.is_urgent_record and _urgent_notice_rides_in_meeting_approval(self.context)
 
     def _args(self, step: Step) -> dict[str, str]:
         if step.verb is Verb.APPLY_LABEL:
@@ -278,11 +310,17 @@ class _Planner:
 
 
 def alternatives_reply(
-    source_message_id: str, alternatives: tuple[Interval, ...], *, attempt: int
+    source_message_id: str,
+    alternatives: tuple[Interval, ...],
+    *,
+    attempt: int,
+    urgent_quote: str | None = None,
 ) -> Action:
-    """The gated reply offering free slots, exactly as the plan writes it for that attempt."""
+    """The gated reply offering free slots, exactly as the plan writes it for that attempt. An
+    urgent meeting's carries the quote, so its next request still tells the manager why."""
+    notice = {} if urgent_quote is None else {"quote": urgent_quote}
     return _keyed(
-        _Unkeyed(verb=Verb.SEND_REPLY, args=_alternatives_args(alternatives)),
+        _Unkeyed(verb=Verb.SEND_REPLY, args={**_alternatives_args(alternatives), **notice}),
         source_message_id=source_message_id,
         attempt=attempt,
     )

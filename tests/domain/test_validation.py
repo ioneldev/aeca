@@ -541,3 +541,18 @@ def test_an_end_that_is_before_the_start_in_utc_drops_the_window() -> None:
 
     assert result.meeting is not None and result.meeting.windows == ()
     assert result.dropped == ("meeting.windows[0]: end is not after start",)
+
+
+def test_an_urgent_draft_is_dropped_on_a_meeting_because_its_reply_is_the_reply() -> None:
+    submitted = meeting_decision(window()).model_copy(
+        update={
+            "urgent": True,
+            "urgent_quote": "need it today",
+            "urgent_draft": "I can join at 14:00.",
+        }
+    )
+
+    result = validated(submitted, context(text="We need it today, Tuesday at 3pm", internal=True))
+
+    assert result.urgent and result.urgent_draft is None
+    assert result.dropped == ("urgent_draft: a meeting's reply is the meeting reply",)

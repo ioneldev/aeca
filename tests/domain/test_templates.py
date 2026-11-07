@@ -126,7 +126,8 @@ def test_templates_encode_non_ascii_names() -> None:
     facts = make_facts(subject="Änderung", sender_name="Jürgen Müller")
 
     for message in every_template(facts):
-        assert "Jürgen Müller" in message.body
+        if message.kind != "urgent_reply":
+            assert "Jürgen Müller" in message.body
         assert message.subject == "Re: Änderung"
         message.body.encode("utf-8")
 
@@ -395,3 +396,22 @@ def test_an_urgent_quote_cannot_start_a_line_with_approve() -> None:
 
     for line in body.splitlines():
         assert not FORBIDDEN_LINE_START.match(line), line
+
+
+def test_the_urgent_reply_is_the_draft_as_written_with_no_greeting_or_sign_off() -> None:
+    request = ReplyRequest(facts=make_facts(sender_name="Dana"), aeca_id="k-1")
+
+    body = urgent_reply(request, draft="  I can join the call at 14:00.\nSpeak soon.  ").body
+
+    assert body == "I can join the call at 14:00.\nSpeak soon."
+    assert "Hello" not in body and "Kind regards" not in body and "AECA" not in body
+
+
+def test_the_urgent_reply_keeps_its_subject_threading_and_kind() -> None:
+    facts = make_facts(rfc822_message_id="<m2@example.com>", references=None, thread_id="t-1")
+
+    message = urgent_reply(ReplyRequest(facts=facts, aeca_id="k-1"), draft="On it.")
+
+    assert message.subject == reply_subject(facts.subject)
+    assert (message.kind, message.aeca_id, message.thread_id) == ("urgent_reply", "k-1", "t-1")
+    assert message.in_reply_to == "<m2@example.com>"

@@ -229,17 +229,15 @@
       "actions": [
         "apply_label",
         "star",
-        "notify_manager",
         "request_approval",
         "create_event",
-        "send_reply",
         "send_reply"
       ],
       "approval": true,
       "reply": "confirmation",
       "calendar": "free"
     },
-    "note": "Escalation (a customer threatening to leave) makes it urgent (§4.2). From an internal sender it gets star, URGENT, a notice to the manager and a drafted reply, and the meeting row adds create_event + confirmation: the two rows add up. One approval request carries every action that waits, so actions lists send_reply twice: the meeting confirmation, then the urgent draft, both under the same approval. The reply field names the primary row's reply (confirmation)."
+    "note": "Escalation (a customer threatening to leave) makes it urgent (§4.2). From an internal sender the urgent row stars the email, labels it URGENT and carries the urgent notice inside the approval request, so there is no separate notify_manager. It adds no second reply (R49): the meeting reply is the reply. The meeting row adds create_event + confirmation, so actions lists one send_reply. The reply field names that reply (confirmation)."
   },
   {
     "id": "meeting-outside-working-hours",

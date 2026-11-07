@@ -33,8 +33,8 @@ OUTSIDE_WORK_HOURS_NOTE = (
     "Note: this time is outside working hours. It is offered because the sender proposed it."
 )
 URGENT_NOTE = (
-    "This email looks urgent and needs your attention soon. It is starred and labelled URGENT, "
-    "and the reply drafted to the sender is below."
+    "This email looks urgent and needs your attention soon. It is starred and labelled URGENT. "
+    "Any reply to the sender is quoted above, exactly as it would be sent."
 )
 REPLY_HEADLINES = {
     "acknowledgement": "an acknowledgement",
@@ -170,7 +170,9 @@ def alternatives(
 
 
 def urgent_reply(request: ReplyRequest, *, draft: str) -> OutgoingMessage:
-    return _reply(request, kind="urgent_reply", paragraphs=(draft.strip(),))
+    """The draft is in the manager's voice and goes out as the manager read it, so it gets no
+    greeting and no sign-off."""
+    return _threaded_reply(request, kind="urgent_reply", body=draft.strip())
 
 
 def urgent_notice(notice: UrgentNotice) -> OutgoingMessage:
@@ -304,8 +306,12 @@ def describe_slot(slot: Interval, zone: ZoneInfo) -> str:
 
 
 def _reply(request: ReplyRequest, *, kind: str, paragraphs: Sequence[str]) -> OutgoingMessage:
+    body = "\n\n".join((_greeting(request.facts), *paragraphs, SIGN_OFF))
+    return _threaded_reply(request, kind=kind, body=body)
+
+
+def _threaded_reply(request: ReplyRequest, *, kind: str, body: str) -> OutgoingMessage:
     facts = request.facts
-    body = "\n\n".join((_greeting(facts), *paragraphs, SIGN_OFF))
     return OutgoingMessage(
         to=facts.sender,
         subject=reply_subject(facts.subject),
