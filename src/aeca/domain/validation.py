@@ -71,6 +71,9 @@ def _why_refused(submitted: str) -> str:
     return f"{submitted.strip()} is not a label"
 
 
+MEETING_DRAFT_DROPPED = "urgent_draft: a meeting's reply is the meeting reply"
+
+
 @dataclass(slots=True)
 class _FieldValidation:
     submitted: ModelDecision
@@ -119,6 +122,9 @@ class _FieldValidation:
     def _urgent_draft(self, *, urgent: bool) -> str | None:
         draft = self.submitted.urgent_draft
         if draft is None or not draft.strip():
+            return None
+        if self.label is Label.MEETING_REQUEST:
+            self.dropped.append(MEETING_DRAFT_DROPPED)
             return None
         if not (urgent and self.context.facts.internal):
             self.dropped.append("urgent_draft: only for an urgent email from an internal sender")

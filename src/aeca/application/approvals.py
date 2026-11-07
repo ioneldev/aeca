@@ -362,7 +362,14 @@ class ApprovalService:
         attempt = approval.attempt + 1
         source_id = approval.source_message_id
         alternatives = self._alternatives(approval)
-        offered = (alternatives_reply(source_id, alternatives, attempt=attempt),)
+        offered = (
+            alternatives_reply(
+                source_id,
+                alternatives,
+                attempt=attempt,
+                urgent_quote=_urgent_quote_of(approval),
+            ),
+        )
         carried = tuple(
             for_attempt(action, source_message_id=source_id, attempt=attempt)
             for action in approval.actions
@@ -492,4 +499,10 @@ def _event_slots(approval: Approval) -> tuple[Interval, ...]:
         )
         for action in approval.actions
         if action.verb is Verb.CREATE_EVENT
+    )
+
+
+def _urgent_quote_of(approval: Approval) -> str | None:
+    return next(
+        (action.args["quote"] for action in approval.actions if "quote" in action.args), None
     )

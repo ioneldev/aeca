@@ -94,7 +94,7 @@ def _approval_request(request: ComposeRequest) -> OutgoingMessage:
             headline=_headline(args.actions, request.facts),
             steps=tuple(_request_step(action, request) for action in args.actions),
             outside_work_hours=args.outside_work_hours,
-            urgent=any(_is_urgent_reply(action) for action in args.actions),
+            urgent=any(_carries_urgent_notice(action) for action in args.actions),
             urgent_quote=_urgent_quote(args.actions),
         )
     )
@@ -123,12 +123,14 @@ def _headline(actions: tuple[Action, ...], facts: EmailFacts) -> str:
 
 def _urgent_quote(actions: tuple[Action, ...]) -> str:
     return next(
-        (action.args.get("quote", "") for action in actions if _is_urgent_reply(action)), ""
+        (action.args.get("quote", "") for action in actions if _carries_urgent_notice(action)), ""
     )
 
 
-def _is_urgent_reply(action: Action) -> bool:
-    return action.verb is Verb.SEND_REPLY and action.args.get("template") == "urgent_reply"
+def _carries_urgent_notice(action: Action) -> bool:
+    """An urgent draft always does; an urgent meeting's actions do through their quote. An urgent
+    draft recorded before the quote was kept has the template only."""
+    return "quote" in action.args or action.args.get("template") == "urgent_reply"
 
 
 def _confirmation(args: Mapping[str, str], request: ReplyRequest) -> OutgoingMessage:

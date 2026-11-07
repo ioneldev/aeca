@@ -654,7 +654,7 @@ def test_approving_the_new_approval_sends_the_alternatives(rig: ApprovalRig) -> 
     assert rig.calendar.inserted == []
 
 
-def test_a_superseded_urgent_meeting_keeps_its_urgent_reply_in_the_new_approval(
+def test_a_superseded_urgent_meeting_keeps_its_urgent_quote_in_the_new_approval(
     rig: ApprovalRig,
 ) -> None:
     rig.receive_meeting_request(
@@ -672,7 +672,8 @@ def test_a_superseded_urgent_meeting_keeps_its_urgent_reply_in_the_new_approval(
     rig.service.process_all()
 
     templates = [action.args["template"] for action in rig.approval(1).actions]
-    assert templates == ["alternatives", "urgent_reply"]
+    assert templates == ["alternatives"]
+    assert rig.approval(1).actions[0].args["quote"] == "today"
     keys_before = {action.key for action in rig.approval(0).actions}
     assert keys_before.isdisjoint(action.key for action in rig.approval(1).actions)
 
@@ -997,7 +998,7 @@ def test_an_interrupted_supersede_never_lets_the_original_execute(rig: ApprovalR
     assert rig.approval(1).state is ApprovalState.EXECUTED
     assert rig.calendar.inserted == []
     assert "confirmation" not in rig.kinds_sent()
-    assert rig.kinds_sent().count("urgent_reply") == 1
+    assert rig.kinds_sent().count("urgent_reply") == 0
     assert rig.kinds_sent().count("alternatives") == 1
     assert len(rig.requests_sent()) == 2
 

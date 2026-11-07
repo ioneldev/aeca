@@ -305,17 +305,51 @@ def test_an_urgent_draft_to_an_automated_sender_is_dropped_but_the_notice_goes()
     assert shape(result.automatic)[-1] == ("notify_manager", "")
 
 
-def test_an_urgent_internal_meeting_asks_one_approval_in_order() -> None:
-    result = plan(
+def test_an_urgent_internal_meeting_with_a_draft_gets_one_reply_and_no_separate_notice() -> None:
+    chosen = replace(
         decision(Label.MEETING_REQUEST, meeting=MEETING, urgent=True, urgent_draft=DRAFT),
-        facts=INTERNAL,
-        meeting=SlotFree(SLOT, False),
+        urgent_quote="needed today",
     )
 
-    assert shape(result.for_approval) == [
-        ("create_event", ""), ("send_reply", "confirmation"), ("send_reply", "urgent_reply"),
-    ]  # fmt: skip
+    result = plan(chosen, facts=INTERNAL, meeting=NoSlotFree(THREE_SLOTS))
+
+    assert shape(result.for_approval) == [("send_reply", "alternatives")]
+    assert all(action.verb is not Verb.NOTIFY_MANAGER for action in result.automatic)
+    assert ("star", "") in shape(result.automatic)
+    assert result.for_approval[0].args["quote"] == "needed today"
+
+
+def test_an_urgent_internal_meeting_with_a_free_slot_confirms_once_and_carries_the_notice() -> None:
+    chosen = replace(
+        decision(Label.MEETING_REQUEST, meeting=MEETING, urgent=True, urgent_draft=DRAFT),
+        urgent_quote="needed today",
+    )
+
+    result = plan(chosen, facts=INTERNAL, meeting=SlotFree(SLOT, False))
+
+    assert shape(result.for_approval) == [("create_event", ""), ("send_reply", "confirmation")]
+    assert all(action.args["quote"] == "needed today" for action in result.for_approval)
+    assert all(action.verb is not Verb.NOTIFY_MANAGER for action in result.automatic)
     assert result.holds == (SLOT,)
+
+
+def test_an_urgent_internal_meeting_already_on_the_calendar_is_notified_without_approval() -> None:
+    chosen = decision(Label.MEETING_REQUEST, meeting=MEETING, urgent=True)
+
+    result = plan(chosen, facts=INTERNAL, meeting=AlreadyOnCalendar("e-1"))
+
+    assert result.for_approval == ()
+    assert shape(result.automatic)[-1] == ("notify_manager", "")
+
+
+def test_an_urgent_external_meeting_carries_no_notice_in_its_approval() -> None:
+    chosen = replace(
+        decision(Label.MEETING_REQUEST, meeting=MEETING, urgent=True), urgent_quote="today"
+    )
+
+    result = plan(chosen, facts=make_facts(internal=False), meeting=SlotFree(SLOT, False))
+
+    assert all("quote" not in action.args for action in result.for_approval)
 
 
 def test_with_an_empty_internal_list_every_urgent_sender_counts_as_internal() -> None:
@@ -497,13 +531,13 @@ def test_an_action_for_another_attempt_is_the_one_the_plan_makes_for_that_attemp
 
 
 def test_the_event_and_its_confirmation_are_bound_to_the_slot_and_nothing_else_is() -> None:
-    chosen = decision(Label.MEETING_REQUEST, meeting=MEETING, urgent=True, urgent_draft=DRAFT)
+    chosen = decision(Label.MEETING_REQUEST, meeting=MEETING, urgent=True)
     planned = plan(chosen, facts=INTERNAL, meeting=SlotFree(SLOT, False))
     alternatives = plan(chosen, facts=INTERNAL, meeting=NoSlotFree(THREE_SLOTS))
 
     bound = [is_bound_to_the_slot(action) for action in planned.for_approval]
 
-    assert bound == [True, True, False]
+    assert bound == [True, True]
     assert not any(is_bound_to_the_slot(action) for action in alternatives.for_approval)
 
 
@@ -529,3 +563,12 @@ def test_the_event_carries_the_quoted_times() -> None:
     ).for_approval
 
     assert event.args["quoted"] == '"Tuesday at 3pm"; "or Wednesday morning"'
+
+
+def test_the_alternatives_reply_of_an_urgent_meeting_keeps_the_quote_for_the_next_request() -> None:
+    plain = alternatives_reply("m-7", THREE_SLOTS, attempt=1)
+    urgent = alternatives_reply("m-7", THREE_SLOTS, attempt=1, urgent_quote="needed today")
+
+    assert "quote" not in plain.args
+    assert urgent.args["quote"] == "needed today"
+    assert urgent.key == plain.key
