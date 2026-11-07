@@ -4,21 +4,30 @@ import signal
 import sys
 import threading
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from pathlib import Path
 
+from aeca.adapters.clock import SystemClock
 from aeca.adapters.env_file import set_env_value
 from aeca.adapters.google_auth import ConsentRequest, run_consent
+from aeca.adapters.sqlite_state import StateNeedsMigration, read_awaiting_approvals
+from aeca.domain.actions import Action
+from aeca.domain.approval import Approval
 from aeca.domain.errors import AecaError
 from aeca.settings import load_settings
 from aeca.tools.tool_commands import add_tool_commands
-from aeca.wiring import AUDIT_FILE_NAME, build
+from aeca.wiring import AUDIT_FILE_NAME, STATE_FILE_NAME, build
 
 REFRESH_TOKEN_VARIABLE = "GOOGLE_REFRESH_TOKEN"
 DATA_DIR_VARIABLE = "AECA_DATA_DIR"
 DEFAULT_DATA_DIR = "/data"
 
-# The seam the tests replace, so a test never builds the Google and Anthropic clients.
+# The seams the tests replace, so a test never builds the Google and Anthropic clients, and
+# reads a fixed time.
 build_service = build
+clock = SystemClock()
+MINUTES_PER_HOUR = 60
+HOURS_PER_DAY = 24
 
 Handler = Callable[[argparse.Namespace], int]
 
@@ -45,6 +54,10 @@ def _parser() -> argparse.ArgumentParser:
     run.set_defaults(handler=_run)
     audit = commands.add_parser("audit", help="print the audit log")
     audit.set_defaults(handler=_audit)
+    approvals = commands.add_parser(
+        "approvals", help="list the approvals the manager has not answered"
+    )
+    approvals.set_defaults(handler=_approvals)
     add_tool_commands(commands)
     return parser
 
@@ -83,9 +96,58 @@ def _stop_on_signals(stop: threading.Event) -> None:
 
 # Reads the data directory alone, so the audit can be shown without any credential.
 def _audit(_arguments: argparse.Namespace) -> int:
-    path = Path(os.environ.get(DATA_DIR_VARIABLE) or DEFAULT_DATA_DIR) / AUDIT_FILE_NAME
+    path = _data_dir() / AUDIT_FILE_NAME
     if not path.exists():
         print(f"No audit log yet: {path} does not exist.")
         return 0
     sys.stdout.write(path.read_text(encoding="utf-8"))
     return 0
+
+
+# Reads the state file alone, like the audit, and never creates, migrates or writes it: AECA may be
+# running beside it.
+def _approvals(_arguments: argparse.Namespace) -> int:
+    path = _data_dir() / STATE_FILE_NAME
+    if not path.exists():
+        print(f"No approvals yet: {path} does not exist.")
+        return 0
+    try:
+        waiting = read_awaiting_approvals(path)
+    except StateNeedsMigration:
+        print("The state file is from an older AECA: start AECA once to migrate the state file.")
+        return 0
+    if not waiting:
+        print("No approval is waiting.")
+        return 0
+    now = clock.now()
+    for approval in waiting:
+        print(_approval_line(approval, now))
+    return 0
+
+
+def _approval_line(approval: Approval, now: datetime) -> str:
+    subject = approval.source_subject or "(subject not recorded)"
+    actions = ", ".join(_action_name(action) for action in approval.actions)
+    return f"{approval.id}  {_age(approval.opened_at, now)}  {subject}  {actions}"
+
+
+def _action_name(action: Action) -> str:
+    detail = action.args.get("template") or action.args.get("label")
+    return f"{action.verb.value}:{detail}" if detail else action.verb.value
+
+
+def _age(opened_at: datetime | None, now: datetime) -> str:
+    if opened_at is None:
+        return "unknown"
+    total_minutes = int((now - opened_at).total_seconds() // 60)
+    total_hours, minutes = divmod(total_minutes, MINUTES_PER_HOUR)
+    days, hours = divmod(total_hours, HOURS_PER_DAY)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _data_dir() -> Path:
+    return Path(os.environ.get(DATA_DIR_VARIABLE) or DEFAULT_DATA_DIR)

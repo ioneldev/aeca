@@ -11,10 +11,20 @@ from support.inbox_rig import InboxRig
 from aeca.application.process_email import MAX_TRIES
 from aeca.application.service import Service, ServiceDeps
 from aeca.domain.approval import Approval, ApprovalState
+from aeca.domain.audit import AuditLine
 from aeca.domain.errors import EmailError, SystemWideError
 from aeca.domain.labels import ERROR, PROCESSED, Label, ReplyKind
 
 POISON_SUBJECT = "poison"
+
+
+class NoApprovalLoop:
+    """These ticks are about the inbox loop alone."""
+
+    def process_all(self) -> list[AuditLine]:
+        return []
+
+
 MANAGER = "boss@example.com"
 
 
@@ -22,7 +32,11 @@ def service_of(rig: InboxRig) -> tuple[Service, RecordingConsole]:
     console = RecordingConsole()
     service = Service(
         ServiceDeps(
-            processor=rig.processor, mailbox=rig.mailbox, console=console, poll_seconds=0.01
+            processor=rig.processor,
+            mailbox=rig.mailbox,
+            console=console,
+            poll_seconds=0.01,
+            approvals=NoApprovalLoop(),
         )
     )
     return service, console

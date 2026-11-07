@@ -1,5 +1,5 @@
-"""The polling loop: one tick reads the inbox and processes each email, and a system-wide error
-makes the whole service back off instead of failing any email."""
+"""The polling loop: one tick reads the answers to approval requests first, then the inbox, and
+a system-wide error makes the whole service back off instead of failing any email."""
 
 import threading
 from collections.abc import Iterator
@@ -29,6 +29,12 @@ class EmailProcessor(Protocol):
         ...
 
 
+class ApprovalLoop(Protocol):
+    def process_all(self) -> list[AuditLine]:
+        """An audit line for each approval outcome; raises a system-wide error as it is."""
+        ...
+
+
 class Console(Protocol):
     """What the service says on stdout, as JSON lines."""
 
@@ -43,6 +49,7 @@ class ServiceDeps:
     mailbox: Mailbox
     console: Console
     poll_seconds: float
+    approvals: ApprovalLoop
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +84,7 @@ class Service:
     def tick(self) -> TickResult:
         results: list[_Result] = []
         try:
+            self._read_approvals()
             for message_id in self._emails_to_handle():
                 if self._stop.is_set() or _handled(results) == INBOX_MESSAGES_PER_TICK:
                     break
@@ -88,6 +96,19 @@ class Service:
             return self._backing_off(results, error)
         self._outages_in_a_row = 0
         return _tick_result(results, backoff_s=0)
+
+    # Spec §4.6: the approval loop runs first, so an answer is read before the inbox loop could
+    # see its thread, and a closed approval's holds are free before new mail is planned.
+    def _read_approvals(self) -> None:
+        try:
+            lines = self._deps.approvals.process_all()
+        except Exception as error:
+            if ends_the_tick(error):
+                raise
+            self._deps.console.event("approvals_failed", error=str(error))
+            return
+        for line in lines:
+            self._deps.console.email(line)
 
     def _emails_to_handle(self) -> Iterator[str]:
         resumed = self._deps.processor.unfinished()

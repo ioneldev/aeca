@@ -1,4 +1,4 @@
-.PHONY: check preflight image auth start stop logs audit eval seed-calendar rehearse
+.PHONY: check preflight image auth start stop logs audit approvals eval seed-calendar rehearse
 
 # What CI and a reviewer run. Tests marked live or eval touch the network or cost money, so they
 # never run here.
@@ -16,6 +16,7 @@ check:
 #   make start       run AECA in the background; make stop stops it, after the email in hand
 #   make logs        follow the per-email summary lines
 #   make audit       print the audit log
+#   make approvals   list the approvals the manager has not answered yet
 PREFLIGHT = sh scripts/preflight.sh
 IMAGE = aeca:local
 
@@ -50,6 +51,11 @@ logs:
 audit:
 	@$(PREFLIGHT) env-run
 	docker compose run --rm --no-deps aeca audit
+
+# Reads the state file on the volume, so it works whether or not the service is running.
+approvals:
+	@$(PREFLIGHT) env-run
+	docker compose run --rm --no-deps aeca approvals
 
 # Test tools. Each checks .env first, then runs with its values; none starts Docker. They run on
 # the host, so their files go to ./data, which git ignores, not to the container's /data.

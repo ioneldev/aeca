@@ -38,7 +38,7 @@ def test_all_three_methods_are_read_and_lowercased():
         "       dmarc=Fail (p=REJECT sp=REJECT dis=NONE) header.from=x.com"
     )
     assert parse_authentication_results([value]) == AuthResults(
-        spf="pass", dkim="pass", dmarc="fail"
+        spf="pass", dkim="pass", dmarc="fail", dmarc_domain="x.com"
     )
 
 
@@ -113,3 +113,33 @@ def test_several_dkim_results_are_legitimate_and_the_first_wins():
     header = "mx.google.com; dkim=pass header.i=@a.com; dkim=pass header.i=@b.com; dmarc=pass"
     results = parse_authentication_results([header])
     assert (results.dkim, results.dmarc) == ("pass", "pass")
+
+
+# The domain DMARC was evaluated for: a pass counts only for the sender whose domain it names.
+
+
+def test_the_domain_dmarc_was_checked_for_is_read_from_googles_result():
+    value = (
+        "mx.google.com; dkim=pass header.i=@protonmail.com header.s=protonmail3;"
+        " spf=pass (google.com: domain of a@protonmail.com) smtp.mailfrom=a@protonmail.com;"
+        " dmarc=pass (p=QUARANTINE sp=QUARANTINE dis=NONE) header.from=ProtonMail.com"
+    )
+    assert parse_authentication_results([value]).dmarc_domain == "protonmail.com"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "mx.google.com; dmarc=pass",
+        "mx.google.com; dmarc=pass (header.from=example.com)",
+        "mx.google.com; dkim=pass header.from=example.com; dmarc=pass",
+        "evil.example; dmarc=pass header.from=example.com",
+    ],
+)
+def test_without_googles_header_from_on_the_dmarc_result_the_domain_is_none(value):
+    assert parse_authentication_results([value]).dmarc_domain is None
+
+
+def test_the_domain_of_a_duplicated_dmarc_result_is_not_trusted():
+    value = "mx.google.com; dmarc=pass header.from=a.example; dmarc=pass header.from=b.example"
+    assert parse_authentication_results([value]).dmarc_domain is None

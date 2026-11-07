@@ -3,8 +3,11 @@
 Pure code: nothing here asks the model or the network anything.
 """
 
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from email.errors import UndecodableBytesDefect
 from email.headerregistry import AddressHeader
 from email.message import EmailMessage
 
@@ -32,6 +35,11 @@ HIGH_X_PRIORITIES = frozenset({"1", "2"})
 AUTOMATED_LOCAL_PARTS = frozenset({"noreply", "no-reply", "mailer-daemon", "postmaster"})
 GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
 CANONICAL_GMAIL_DOMAIN = "gmail.com"
+MISSING_DEFECTS = "the header records no defects attribute"
+HEADER_BLOCK_END = b"\r\n\r\n"
+BARE_LINE_END = re.compile(rb"\r(?!\n)|(?<!\r)\n")
+# A From field as RFC 5322's obsolete syntax allows it: whitespace may stand before the colon.
+FROM_LINE = re.compile(rb"^from[ \t]*:", re.IGNORECASE | re.MULTILINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +65,9 @@ class EmailFacts:
     references: str | None
     sender: str
     sender_name: str
+    # One From header holding one address. Otherwise the sender AECA reads may not be the one
+    # Gmail's DMARC result was judged for.
+    single_sender: bool
     reply_to: str | None
     reply_to_differs: bool
     subject: str
@@ -83,6 +94,7 @@ def extract_facts(raw: RawEmail, settings: FactSettings) -> EmailFacts:
     _, reply_to_address = _first_address(message, "Reply-To")
     reply_to = reply_to_address or None
     auth = parse_authentication_results(_all_headers(message, "Authentication-Results"))
+    single_sender = _headers_are_clean(raw, message) and _has_a_single_sender(message)
     bulk = _is_bulk(message, sender, settings)
     plain, html = body_text(message)
     return EmailFacts(
@@ -94,11 +106,13 @@ def extract_facts(raw: RawEmail, settings: FactSettings) -> EmailFacts:
         references=_bounded_optional(_header(message, "References"), REFERENCES_LIMIT),
         sender=sender,
         sender_name=bounded(visible(sender_name), SENDER_NAME_LIMIT),
+        single_sender=single_sender,
         reply_to=_bounded_optional(reply_to, REPLY_TO_LIMIT),
         reply_to_differs=reply_to is not None and reply_to != sender,
         subject=bounded(visible(_header(message, "Subject") or ""), SUBJECT_LIMIT),
         auth=auth,
-        internal=_counts_as_internal(sender, auth, settings),
+        # An ambiguous From never counts as internal, as it never counts as the manager (R40).
+        internal=single_sender and _counts_as_internal(sender, auth, settings),
         automated=bulk or _is_automated(message, sender),
         bulk=bulk,
         priority_high=_is_priority_high(message),
@@ -171,6 +185,52 @@ def _first_address(message: EmailMessage, header_name: str) -> tuple[str, str]:
         return first.display_name, first.addr_spec.lower()
     except Exception:
         return "", ""
+
+
+# Ruling R43: Python can drop a second From before the header parser sees it, as a `From :` line
+# (a defect on the message alone, or none at all as the first or the last header line, which it
+# takes for an envelope line or moves into the body) or a line split off by a bare CR (no defect
+# anywhere). So the raw header block itself must hold exactly one From line, and no bare line end.
+# Every real delivered message measured passes.
+def _headers_are_clean(raw: RawEmail, message: EmailMessage) -> bool:
+    if not _only_undecodable_bytes(message.defects):
+        return False
+    header_block = _header_block(raw.rfc822)
+    if BARE_LINE_END.search(header_block) is not None:
+        return False
+    return len(FROM_LINE.findall(header_block)) == 1
+
+
+def _header_block(rfc822: bytes) -> bytes:
+    end = rfc822.find(HEADER_BLOCK_END)
+    return rfc822 if end == -1 else rfc822[:end]
+
+
+def _only_undecodable_bytes(defects: Sequence[object]) -> bool:
+    return all(isinstance(defect, UndecodableBytesDefect) for defect in defects)
+
+
+# A structural defect means the parser dropped part of the header to find an address (for
+# example `boss@x <attacker@x>`), so the address read may not be the one Gmail judged DMARC for.
+# Undecodable bytes alone are a raw UTF-8 display name, which some clients send unencoded: they are
+# accepted (ruling R42), but only around an address that is itself plain ASCII.
+def _has_a_single_sender(message: EmailMessage) -> bool:
+    try:
+        headers = list(message.get_all("From", []))
+        if len(headers) != 1 or not isinstance(headers[0], AddressHeader):
+            return False
+        header = headers[0]
+        # The header registry mixes BaseHeader, which owns `defects`, into every header class; the
+        # stubs don't say so. A header without it counts as defective.
+        defects: tuple[object, ...] = getattr(header, "defects", (MISSING_DEFECTS,))
+        if not _only_undecodable_bytes(defects):
+            return False
+        if len(header.addresses) != 1:
+            return False
+        address = header.addresses[0].addr_spec
+        return bool(address) and address.isascii()
+    except Exception:
+        return False
 
 
 def _counts_as_internal(sender: str, auth: AuthResults, settings: FactSettings) -> bool:

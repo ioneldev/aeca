@@ -631,7 +631,7 @@ def test_a_manager_answer_in_an_approval_thread_is_left_for_the_approval_loop(
     assert rig.mailbox.added_labels(answer) == []
 
 
-def test_a_manager_answer_in_a_request_thread_is_skipped_even_with_the_store_wiped(
+def test_a_manager_answer_in_a_request_thread_is_never_decided_even_with_the_store_wiped(
     rig: InboxRig,
 ) -> None:
     rig.receive(
@@ -656,8 +656,10 @@ def test_a_manager_answer_in_a_request_thread_is_skipped_even_with_the_store_wip
     assert rig.processor.process(answer) is None
     assert rig.decided == []
     assert rig.mailbox.sent == []
-    assert rig.mailbox.added_labels(answer) == []
-    assert rig.audit.lines == []
+    # Task 13, fix round 1: no approval waits for it, so it is labelled and audited once.
+    assert rig.mailbox.added_labels(answer) == [PROCESSED]
+    [line] = rig.audit.lines
+    assert (line.message_id, line.rules, line.outcome) == (answer, ("late_answer",), "ignored")
 
 
 def test_a_thread_started_by_another_aeca_message_is_classified_as_usual(rig: InboxRig) -> None:

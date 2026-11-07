@@ -173,7 +173,10 @@ class Calendar(Protocol):
     def event_by_ical_uid(self, uid: str) -> CalendarEvent | None: ...
 
     def insert_event(self, event: NewEvent) -> None:
-        """Creates an event with no attendees, so Google sends no invitation."""
+        """Creates an event with no attendees, so Google sends no invitation.
+
+        An id that already exists, live or cancelled, raises nothing and changes nothing: the
+        caller reads the event back to learn which it is."""
         ...
 
 

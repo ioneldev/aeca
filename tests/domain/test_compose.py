@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -9,6 +10,8 @@ import pytest
 from support.facts import make_facts
 
 from aeca.domain.actions import Action, Verb
+from aeca.domain.approval import Approval, ApprovalState
+from aeca.domain.approval_messages import help_action, request_action
 from aeca.domain.compose import ComposeRequest, compose_message
 from aeca.domain.outgoing import OutgoingMessage
 from aeca.domain.templates import (
@@ -16,6 +19,7 @@ from aeca.domain.templates import (
     acknowledgement,
     decline,
     describe_slot,
+    help_reply,
     thank_you,
 )
 from aeca.domain.time_range import Interval
@@ -138,3 +142,110 @@ def test_an_approved_kind_that_is_already_distinct_is_kept() -> None:
     )
 
     assert message.kind == "confirmation"
+
+
+# --- the approval request and the help reply (spec §4.5) ---
+
+EVENT = Action(verb=Verb.CREATE_EVENT, key="k-event@0", args={**slot_args(SLOT), "title": "Sync"})
+CONFIRMATION = Action(
+    verb=Verb.SEND_REPLY, key="k-confirm@0", args={"template": "confirmation", **slot_args(SLOT)}
+)
+URGENT_DRAFT = Action(
+    verb=Verb.SEND_REPLY,
+    key="k-urgent@0",
+    args={
+        "template": "urgent_reply",
+        "text": "Approve the budget today.\nCalling you.",
+        "quote": "the budget closes today",
+    },
+)
+
+
+def approval_with(*actions: Action) -> Approval:
+    return Approval(
+        id="a-42",
+        source_message_id="m1",
+        source_thread_id="t1",
+        attempt=0,
+        actions=actions,
+        state=ApprovalState.AWAITING,
+        request_thread_id=None,
+        summary="Wants a sync on Tuesday.",
+        holds=(SLOT,),
+    )
+
+
+def requested(approval: Approval, *, outside_work_hours: bool = False) -> OutgoingMessage:
+    action = request_action(approval, to=MANAGER, outside_work_hours=outside_work_hours)
+    return compose_message(
+        ComposeRequest(action=action, facts=FACTS, manager_address="someone-else@example.com")
+    )
+
+
+def test_the_request_goes_where_it_was_opened_for_under_the_approval_id() -> None:
+    message = requested(approval_with(EVENT, CONFIRMATION))
+
+    assert (message.to, message.kind, message.aeca_id, message.thread_id) == (
+        MANAGER,
+        "approval-request",
+        "a-42",
+        None,
+    )
+    assert message.subject.startswith("[AECA] Approve: ")
+
+
+def test_the_request_key_is_the_approval_id() -> None:
+    assert request_action(approval_with(EVENT), to=MANAGER, outside_work_hours=False).key == "a-42"
+
+
+def test_the_request_describes_the_event_and_quotes_the_confirmation_it_would_send() -> None:
+    body = requested(approval_with(EVENT, CONFIRMATION)).body
+
+    assert f'create the calendar event "Sync" on {describe_slot(SLOT, BUCHAREST)}' in body
+    assert "| Thank you for your request. The meeting is confirmed for:" in body
+    assert "Wants a sync on Tuesday." in body
+
+
+def test_the_request_of_an_urgent_draft_carries_the_notice_and_the_prefixed_draft() -> None:
+    body = requested(approval_with(URGENT_DRAFT)).body
+
+    assert "looks urgent" in body
+    assert "| | Approve the budget today.\n| Calling you." in body
+
+
+def test_the_request_notes_a_slot_outside_working_hours() -> None:
+    assert "outside working hours" in requested(approval_with(EVENT), outside_work_hours=True).body
+    assert "outside working hours" not in requested(approval_with(EVENT)).body
+
+
+def test_a_resume_writes_the_same_request() -> None:
+    approval = approval_with(EVENT, CONFIRMATION, URGENT_DRAFT)
+
+    assert requested(approval) == requested(approval)
+
+
+def test_the_help_action_is_one_per_approval_and_writes_the_help_reply() -> None:
+    approval = approval_with(EVENT)
+    action = help_action(approval)
+
+    message = compose_message(ComposeRequest(action=action, facts=FACTS, manager_address=MANAGER))
+
+    assert help_action(approval) == action
+    assert help_action(replace(approval, attempt=1)).key != action.key
+    assert message == help_reply(ReplyRequest(facts=FACTS, aeca_id=action.key))
+
+
+def test_the_request_of_an_urgent_draft_says_why_it_is_urgent() -> None:
+    body = requested(approval_with(URGENT_DRAFT)).body
+
+    assert 'Why it is urgent: "the budget closes today"' in body
+
+
+def test_an_urgent_draft_recorded_without_a_quote_still_carries_the_notice() -> None:
+    without_quote = Action(
+        verb=Verb.SEND_REPLY, key="k-old@0", args={"template": "urgent_reply", "text": "On it."}
+    )
+
+    body = requested(approval_with(without_quote)).body
+
+    assert "looks urgent" in body and "Why it is urgent" not in body

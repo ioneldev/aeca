@@ -186,3 +186,13 @@ def test_insert_failure_is_classified() -> None:
 
     with pytest.raises(EmailError):
         calendar.insert_event(event)
+
+
+def test_an_id_that_already_exists_is_not_an_error_so_the_caller_reads_it_back() -> None:
+    calendar, stub = calendar_in()
+    stub.reply("events.insert", http_error(409, "duplicate"))
+    event = NewEvent("abc", "t", "d", WINDOW)
+
+    calendar.insert_event(event)
+
+    assert len(stub.calls_to("events.insert")) == 1

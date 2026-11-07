@@ -105,7 +105,8 @@ def to_raw(email: CorpusEmail, sender: str, *, received_at: datetime) -> RawEmai
         message_id=f"corpus-{email.id}",
         thread_id=f"corpus-thread-{email.follows or email.id}",
         label_ids=frozenset({"INBOX"}),
-        rfc822=message.as_bytes(),
+        # Gmail hands every line over ending in CRLF, and facts refuse a bare line end in headers.
+        rfc822=message.as_bytes(policy=message.policy.clone(linesep="\r\n")),
         internal_date=received_at,
     )
 

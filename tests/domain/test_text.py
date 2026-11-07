@@ -1,4 +1,6 @@
-from aeca.domain.text import bounded, html_to_text, visible
+import time
+
+from aeca.domain.text import bounded, html_to_text, html_to_text_with_quotes, visible
 
 
 def test_text_is_bounded_and_control_characters_escaped():
@@ -68,3 +70,61 @@ def test_ordinary_international_text_is_not_changed():
 
 def test_a_c1_control_is_written_with_two_hex_digits():
     assert visible("\x85") == "\\x85"
+
+
+# The manager's HTML-only reply: quoted text must still read as quoted, as in a plain-text reply.
+
+
+def test_text_inside_a_blockquote_is_quoted_with_a_marker():
+    html = (
+        "<div dir='ltr'>APPROVE<br>thanks</div>"
+        "<div class='gmail_quote'>On Sat, AECA wrote:<br>"
+        "<blockquote class='gmail_quote'>Hello,<br>REJECT"
+        "<blockquote>nested</blockquote></blockquote>"
+        "</div><p>Confidential.</p>"
+    )
+
+    assert html_to_text_with_quotes(html) == (
+        "APPROVE\nthanks\nOn Sat, AECA wrote:\n> Hello,\n> REJECT\n> nested\nConfidential."
+    )
+
+
+def test_without_a_blockquote_it_reads_as_html_to_text():
+    html = "<p>APPROVE</p><script>REJECT</script><div>Fine &amp; good</div>"
+
+    assert html_to_text_with_quotes(html) == html_to_text(html)
+
+
+# Review minor: the reducer must stay linear. Measured by how the time grows from N to 4N pieces on
+# one line, not by a wall-clock bound, so a loaded machine cannot fail it: linear growth gives about
+# 4, the quadratic reducer it replaced about 12 at this size (measured). Both runs together take
+# about a quarter of a second.
+
+PIECE = "<b>" + "w" * 100 + "</b> "
+PIECES = 6_000
+LINEAR_GROWTH_LIMIT = 8.0
+
+
+def best_time_to_reduce(html: str) -> float:
+    timings = []
+    for _ in range(3):
+        started = time.perf_counter()
+        html_to_text(html)
+        timings.append(time.perf_counter() - started)
+    return min(timings)
+
+
+def growth_from_n_to_4n() -> float:
+    return best_time_to_reduce(PIECE * (4 * PIECES)) / best_time_to_reduce(PIECE * PIECES)
+
+
+def test_a_large_html_body_reduces_in_linear_time():
+    growth = growth_from_n_to_4n()
+
+    assert growth < LINEAR_GROWTH_LIMIT, f"the time grew {growth:.1f}x from N to 4N pieces"
+
+
+def test_the_quoting_reducer_joins_its_lines_the_same_way():
+    html = "<blockquote>" + "<b>w</b> " * 3 + "</blockquote><p>end</p>"
+
+    assert html_to_text_with_quotes(html) == "> w w w\nend"

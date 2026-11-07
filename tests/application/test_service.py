@@ -62,17 +62,35 @@ def line_for(message_id: str, outcome: str = "done") -> AuditLine:
     )
 
 
+class ScriptedApprovals:
+    """The approval loop: each tick returns the scripted lines, or raises the scripted error."""
+
+    def __init__(self, order: list[str]) -> None:
+        self.lines: list[AuditLine] = []
+        self.failure: Exception | None = None
+        self._order = order
+
+    def process_all(self) -> list[AuditLine]:
+        self._order.append("approvals")
+        if self.failure is not None:
+            raise self.failure
+        return list(self.lines)
+
+
 class Rig:
     def __init__(self) -> None:
         self.mailbox = FakeMailbox()
         self.processor = ScriptedProcessor()
         self.console = RecordingConsole()
+        self.order: list[str] = []
+        self.approvals = ScriptedApprovals(self.order)
         self.service = Service(
             ServiceDeps(
                 processor=self.processor,
                 mailbox=self.mailbox,
                 console=self.console,
                 poll_seconds=POLL_SECONDS,
+                approvals=self.approvals,
             )
         )
 
@@ -257,6 +275,7 @@ def test_run_waits_on_the_stop_event_so_a_stop_is_prompt(rig: Rig) -> None:
             mailbox=rig.mailbox,
             console=rig.console,
             poll_seconds=3600,
+            approvals=rig.approvals,
         )
     )
 
@@ -280,3 +299,55 @@ def test_run_waits_the_backoff_not_the_poll_after_an_outage(rig: Rig) -> None:
     rig.service.run(RecordingEvent())
 
     assert waits == [30]
+
+
+# --- the approval loop runs first (spec §4.6) ---
+
+
+def test_the_approval_loop_runs_before_the_inbox_loop(rig: Rig) -> None:
+    rig.inbox("a")
+    original = rig.processor.process
+
+    def noting_the_order(message_id: str) -> AuditLine | None:
+        rig.order.append(message_id)
+        return original(message_id)
+
+    rig.processor.process = noting_the_order  # type: ignore[method-assign]
+
+    rig.service.tick()
+
+    assert rig.order == ["approvals", "a"]
+
+
+def test_each_approval_outcome_is_printed_and_not_counted_as_an_email(rig: Rig) -> None:
+    rig.approvals.lines = [line_for("answer-1"), line_for("answer-2", outcome="ignored")]
+
+    result = rig.service.tick()
+
+    assert [line.message_id for line in rig.console.emails] == ["answer-1", "answer-2"]
+    assert (result.processed, result.failed) == (0, 0)
+
+
+def test_a_system_wide_error_in_the_approval_loop_ends_the_tick_before_the_inbox(rig: Rig) -> None:
+    rig.inbox("a")
+    rig.approvals.failure = CredentialsRevoked("revoked", next_action="make auth")
+
+    result = rig.service.tick()
+
+    assert rig.processor.seen == []
+    assert result.backoff_s == BACKOFF_SECONDS[0]
+    assert rig.console.kinds() == ["backoff"]
+
+
+def test_any_other_failure_of_the_approval_loop_is_printed_and_the_inbox_still_runs(
+    rig: Rig,
+) -> None:
+    rig.inbox("a")
+    rig.approvals.failure = EmailError("thread unreadable", next_action="none")
+
+    result = rig.service.tick()
+
+    assert rig.processor.seen == ["a"]
+    assert result.processed == 1
+    assert rig.console.kinds() == ["approvals_failed"]
+    assert "thread unreadable" in str(rig.console.events[0].fields["error"])

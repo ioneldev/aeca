@@ -198,3 +198,11 @@ def test_a_corpus_header_may_not_redirect_or_rewrite_the_message(tmp_path: Path,
 
 def test_the_shipped_corpus_has_no_reserved_headers() -> None:
     assert load_corpus(CORPUS_PATH)
+
+
+def test_the_raw_email_has_crlf_line_ends_as_gmail_hands_it_over() -> None:
+    raw = to_raw(make_corpus_email(id="crlf"), EVAL_EXTERNAL_SENDER, received_at=FIXED_NOW)
+
+    header_block = raw.rfc822.split(b"\r\n\r\n", 1)[0]
+    assert b"\r\n" in header_block
+    assert b"\n" not in header_block.replace(b"\r\n", b"")

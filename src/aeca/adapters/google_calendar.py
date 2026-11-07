@@ -4,7 +4,9 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from aeca.adapters.google_errors import execute, execute_unless_missing
+from googleapiclient.errors import HttpError
+
+from aeca.adapters.google_errors import classify, execute, execute_unless_missing
 from aeca.domain.calendar_event import CalendarEvent, NewEvent
 from aeca.domain.time_range import Interval
 
@@ -12,6 +14,9 @@ CALENDAR_ID = "primary"
 LIST_PAGE_SIZE = 2500
 # Day-1 spike: 404 is certain, 410 is how Google may report an event that was deleted for good.
 MISSING_EVENT_STATUSES = (404, 410)
+# Day-1 spike: Google answers 409 "duplicate" to an insert under an id that exists, live or
+# cancelled.
+ID_ALREADY_EXISTS = 409
 # Google strips the times from a cancelled event. Callers read only `cancelled` from it, so
 # the interval sits in the distant past where it can never overlap a real window.
 NO_INTERVAL = Interval(datetime(1970, 1, 1, tzinfo=UTC), datetime(1970, 1, 1, 0, 1, tzinfo=UTC))
@@ -60,7 +65,14 @@ class GoogleCalendar:
             "start": _timed(event.interval.start, zone),
             "end": _timed(event.interval.end, zone),
         }
-        execute(self._events.insert(calendarId=CALENDAR_ID, body=body, sendUpdates="none"))
+        request = self._events.insert(calendarId=CALENDAR_ID, body=body, sendUpdates="none")
+        try:
+            request.execute()
+        except HttpError as error:
+            if error.resp.status != ID_ALREADY_EXISTS:
+                raise classify(error) from error
+        except Exception as error:
+            raise classify(error) from error
 
     def _list_arguments(self, window: Interval, page_token: str | None) -> dict[str, Any]:
         arguments: dict[str, Any] = {

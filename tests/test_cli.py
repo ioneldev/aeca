@@ -1,12 +1,19 @@
 import os
 import signal
+import sqlite3
 import threading
 from collections.abc import Iterator
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from fakes.fixed_clock import FIXED_NOW, FixedClock
 
 from aeca import cli
+from aeca.adapters.sqlite_state import SqliteState
+from aeca.domain.actions import Action, Verb
+from aeca.domain.approval import Approval, ApprovalState
 from aeca.domain.errors import ConfigError, CredentialsRevoked
 from aeca.domain.secret import SecretStr
 
@@ -188,3 +195,97 @@ def test_a_sigterm_during_startup_exits_zero_without_starting_the_loop(
 
     assert cli.main(["run"]) == 0
     assert service.ran_with is None
+
+
+# --- aeca approvals: what waits for the manager, read from the state file alone ---
+
+
+def awaiting_approval(approval_id: str, **overrides: object) -> Approval:
+    approval = Approval(
+        id=approval_id,
+        source_message_id=f"m-{approval_id}",
+        source_thread_id=f"t-{approval_id}",
+        attempt=0,
+        actions=(
+            Action(verb=Verb.CREATE_EVENT, key=f"k-event-{approval_id}", args={"title": "Sync"}),
+            Action(
+                verb=Verb.SEND_REPLY,
+                key=f"k-reply-{approval_id}",
+                args={"template": "confirmation"},
+            ),
+        ),
+        state=ApprovalState.AWAITING,
+        request_thread_id=f"r-{approval_id}",
+        summary="Wants a sync.",
+        holds=(),
+        opened_at=FIXED_NOW - timedelta(hours=2, minutes=5),
+        source_subject="Sync on Tuesday?",
+    )
+    return replace(approval, **overrides)  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def approvals_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    for name in ("GMAIL_ADDRESS", "GOOGLE_CLIENT_ID", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AECA_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "clock", FixedClock())
+    return tmp_path
+
+
+def test_approvals_lists_each_awaiting_approval_and_needs_no_credentials(
+    approvals_environment: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = SqliteState(approvals_environment / "state.db")
+    store.approval_save(awaiting_approval("a-1"))
+    store.approval_save(awaiting_approval("a-2", state=ApprovalState.REJECTED))
+    store.approval_save(awaiting_approval("a-3", opened_at=None, source_subject=""))
+
+    code = cli.main(["approvals"])
+
+    lines = capsys.readouterr().out.splitlines()
+    assert code == 0
+    assert lines == [
+        "a-1  2h 5m  Sync on Tuesday?  create_event, send_reply:confirmation",
+        "a-3  unknown  (subject not recorded)  create_event, send_reply:confirmation",
+    ]
+
+
+def test_approvals_with_none_awaiting_says_so(
+    approvals_environment: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    SqliteState(approvals_environment / "state.db")
+
+    assert cli.main(["approvals"]) == 0
+    assert capsys.readouterr().out == "No approval is waiting.\n"
+
+
+def test_approvals_with_no_state_file_says_so_and_creates_none(
+    approvals_environment: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = cli.main(["approvals"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out.count("\n") == 1 and "state.db" in out
+    assert not (approvals_environment / "state.db").exists()
+
+
+def test_approvals_never_migrates_an_older_state_file(
+    approvals_environment: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = approvals_environment / "state.db"
+    SqliteState(path).approval_save(awaiting_approval("a-1"))
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA user_version = 2")
+    connection.commit()
+    connection.close()
+    before = path.read_bytes()
+
+    code = cli.main(["approvals"])
+
+    assert code == 0
+    assert capsys.readouterr().out == (
+        "The state file is from an older AECA: start AECA once to migrate the state file.\n"
+    )
+    assert path.read_bytes() == before

@@ -4,23 +4,33 @@ A label change is one modify of the source message, which is idempotent. A send 
 Gmail draft whose id is recorded before it is sent: after a crash, a recorded draft that still
 exists is sent, and one that is gone was sent already, since Gmail deletes a draft it sends. A
 reply also looks in its thread first, for a sent message carrying its key: that covers a lost
-state file.
+state file. An event's id derives from the source message, and it is read before it is inserted
+(spec §4.4): a live event under it is the work done, and only a live one counts as done.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aeca.application.failures import describe, ends_the_tick
 from aeca.application.ports import Calendar, Mailbox, Tracer
 from aeca.application.state_ports import StateStore
 from aeca.domain.actions import Action, ActionRecord, ActionStatus, Verb
+from aeca.domain.calendar_event import CalendarEvent, NewEvent
 from aeca.domain.compose import ComposeRequest, compose_message
 from aeca.domain.errors import EmailError
 from aeca.domain.facts import EmailFacts
+from aeca.domain.ids import event_id
 from aeca.domain.labels import INBOX, PROCESSED, SENT, SPAM_SYSTEM_LABEL, STARRED
 from aeca.domain.outgoing import OutgoingMessage
+from aeca.domain.templates import EventDetails, event_description
+from aeca.domain.time_range import Interval
 
-SENDING_VERBS = frozenset({Verb.SEND_REPLY, Verb.NOTIFY_MANAGER})
+SENDING_VERBS = frozenset({Verb.SEND_REPLY, Verb.NOTIFY_MANAGER, Verb.REQUEST_APPROVAL})
+# A cancelled event under an id moves creation to the next attempt's id. A calendar that cancels
+# every event it is given would move it forever, so the walk stops here and the action fails.
+MAX_EVENT_ATTEMPTS = 5
 # A message in a thread of its own has no thread to look in once the state file is lost, so the
 # account's most recent sent mail is read instead, through the SENT label's index, which does not
 # lag as search does. The known limit: a send older than this many sent messages is not found.
@@ -112,6 +122,8 @@ class Executor:
     def _perform(self, record: ActionRecord, source: EmailFacts) -> _Performed:
         if record.action.verb in SENDING_VERBS:
             return self._send_once(record, source)
+        if record.action.verb is Verb.CREATE_EVENT:
+            return self._create_event_once(record, source)
         add, remove = _label_change(record.action)
         self._deps.mailbox.modify(source.message_id, add=add, remove=remove)
         return _Performed(ref=None)
@@ -155,6 +167,47 @@ class Executor:
             None,
         )
 
+    def _create_event_once(self, record: ActionRecord, source: EmailFacts) -> _Performed:
+        calendar = self._deps.calendar
+        for attempt in range(MAX_EVENT_ATTEMPTS):
+            candidate = event_id(source.message_id, attempt)
+            found = calendar.get_event(candidate)
+            if found is None:
+                calendar.insert_event(self._new_event(record, source, new_id=candidate))
+                found = calendar.get_event(candidate)
+            if _is_live(found):
+                return _Performed(ref=candidate)
+            if found is None:
+                raise EmailError(
+                    f"the calendar answered the insert of event {candidate}, then did not have it",
+                    next_action="Check the calendar; AECA retries, and confirms nothing meanwhile",
+                )
+        raise EmailError(
+            f"every event id for {source.message_id} up to attempt {MAX_EVENT_ATTEMPTS} is "
+            "cancelled",
+            next_action="Check the calendar: something deletes the events AECA creates",
+        )
+
+    def _new_event(self, record: ActionRecord, source: EmailFacts, *, new_id: str) -> NewEvent:
+        args = record.action.args
+        slot = Interval(datetime.fromisoformat(args["start"]), datetime.fromisoformat(args["end"]))
+        details = EventDetails(
+            facts=source,
+            slot=slot,
+            zone=ZoneInfo(args["zone"]),
+            summary=self._summary_of_approval(record.approval_id),
+            approval_id=record.approval_id or "",
+            # An event action recorded before the quoted times were kept has none.
+            quoted_times=args.get("quoted", ""),
+        )
+        return NewEvent(
+            id=new_id, title=args["title"], description=event_description(details), interval=slot
+        )
+
+    def _summary_of_approval(self, approval_id: str | None) -> str:
+        approval = None if approval_id is None else self._deps.store.approval_get(approval_id)
+        return "" if approval is None else approval.summary
+
     def _message(self, record: ActionRecord, source: EmailFacts) -> OutgoingMessage:
         return compose_message(
             ComposeRequest(
@@ -170,6 +223,10 @@ class Executor:
         self._deps.tracer.event(
             "action_failed", key=action.key, verb=action.verb.value, error=describe(error)
         )
+
+
+def _is_live(event: CalendarEvent | None) -> bool:
+    return event is not None and not event.cancelled
 
 
 def _label_change(action: Action) -> tuple[list[str], list[str]]:

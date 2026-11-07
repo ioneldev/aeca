@@ -8,17 +8,26 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from aeca.domain.actions import Action, Verb
+from aeca.domain.approval_messages import HELP_TEMPLATE, RequestArgs
 from aeca.domain.facts import EmailFacts
 from aeca.domain.outgoing import OutgoingMessage
 from aeca.domain.templates import (
     APPROVED_PREFIX,
     AUTOMATIC_REPLY_KINDS,
+    ApprovalRequest,
     ReplyRequest,
+    RequestStep,
     UrgentNotice,
     acknowledgement,
     alternatives,
+    approval_request,
     confirmation,
     decline,
+    event_headline,
+    event_step,
+    help_reply,
+    reply_headline,
+    reply_step,
     thank_you,
     urgent_notice,
     urgent_reply,
@@ -39,6 +48,8 @@ def compose_message(request: ComposeRequest) -> OutgoingMessage:
     action = request.action
     if action.verb is Verb.NOTIFY_MANAGER:
         return _urgent_notice(request)
+    if action.verb is Verb.REQUEST_APPROVAL:
+        return _approval_request(request)
     if action.verb is Verb.SEND_REPLY:
         reply = _reply(action, ReplyRequest(facts=request.facts, aeca_id=action.key))
         return _marked_approved(reply) if request.approved else reply
@@ -72,6 +83,54 @@ def _urgent_notice(request: ComposeRequest) -> OutgoingMessage:
     )
 
 
+def _approval_request(request: ComposeRequest) -> OutgoingMessage:
+    args = RequestArgs.of(request.action)
+    return approval_request(
+        ApprovalRequest(
+            facts=request.facts,
+            approval_id=request.action.key,
+            manager_address=args.to,
+            summary=args.summary,
+            headline=_headline(args.actions, request.facts),
+            steps=tuple(_request_step(action, request) for action in args.actions),
+            outside_work_hours=args.outside_work_hours,
+            urgent=any(_is_urgent_reply(action) for action in args.actions),
+            urgent_quote=_urgent_quote(args.actions),
+        )
+    )
+
+
+# A step that sends a reply quotes that very reply, as approving it would send it.
+def _request_step(action: Action, request: ComposeRequest) -> RequestStep:
+    if action.verb is Verb.CREATE_EVENT:
+        args = action.args
+        return RequestStep(event_step(args["title"], _slot(args), ZoneInfo(args["zone"])))
+    if action.verb is Verb.SEND_REPLY:
+        reply = compose_message(replace(request, action=action, approved=True))
+        return RequestStep(reply_step(request.facts), draft=reply.body)
+    raise ValueError(f"an approval cannot ask for {action.verb.value} ({action.key})")
+
+
+def _headline(actions: tuple[Action, ...], facts: EmailFacts) -> str:
+    if not actions:
+        return f'the email "{facts.subject}"'
+    first = actions[0]
+    if first.verb is Verb.CREATE_EVENT:
+        args = first.args
+        return event_headline(args["title"], _slot(args), ZoneInfo(args["zone"]))
+    return reply_headline(first.args.get("template", ""), facts)
+
+
+def _urgent_quote(actions: tuple[Action, ...]) -> str:
+    return next(
+        (action.args.get("quote", "") for action in actions if _is_urgent_reply(action)), ""
+    )
+
+
+def _is_urgent_reply(action: Action) -> bool:
+    return action.verb is Verb.SEND_REPLY and action.args.get("template") == "urgent_reply"
+
+
 def _confirmation(args: Mapping[str, str], request: ReplyRequest) -> OutgoingMessage:
     return confirmation(request, slot=_slot(args), zone=ZoneInfo(args["zone"]))
 
@@ -101,4 +160,5 @@ REPLY_WRITERS: Mapping[str, ReplyWriter] = {
     "confirmation": _confirmation,
     "alternatives": _alternatives,
     "urgent_reply": _urgent_reply,
+    HELP_TEMPLATE: lambda _args, request: help_reply(request),
 }

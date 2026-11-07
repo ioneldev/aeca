@@ -13,12 +13,13 @@ from aeca.adapters.redactor import Redactor
 from aeca.adapters.rotating_log import Rotation
 from aeca.adapters.sqlite_state import SqliteState
 from aeca.adapters.tracer import JsonlTracer
+from aeca.application.approvals import ApprovalDeps, ApprovalService
 from aeca.application.budget import Budget
 from aeca.application.decide import DecideDeps, decide
-from aeca.application.deferred_approval import DeferredApprovalOpener
 from aeca.application.executor import Executor, ExecutorDeps
 from aeca.application.process_email import InboxDeps, InboxProcessor, InboxSettings
 from aeca.application.service import Service, ServiceDeps
+from aeca.domain.answers import AnswerRules
 from aeca.domain.errors import ConfigError
 from aeca.domain.facts import FactSettings
 from aeca.domain.planner import PlanSettings, WorkHours, parse_work_hours
@@ -58,13 +59,32 @@ def build(settings: Settings) -> Service:
     )
     mailbox = google.mailbox
     store = SqliteState(data_dir / STATE_FILE_NAME)
+    audit = JsonlAuditLog(data_dir / AUDIT_FILE_NAME, secrets=secrets, rotation=LOG_ROTATION)
+    inbox_settings = _inbox_settings(settings, zone)
     executor = Executor(
         ExecutorDeps(
             mailbox=mailbox,
             calendar=google.calendar,
             store=store,
             tracer=tracer,
-            manager_address=settings.manager_address or settings.gmail_address,
+            manager_address=settings.manager_or_account,
+        )
+    )
+    approvals = ApprovalService(
+        ApprovalDeps(
+            mailbox=mailbox,
+            calendar=google.calendar,
+            store=store,
+            executor=executor,
+            audit=audit,
+            tracer=tracer,
+            clock=clock,
+            plan_settings=inbox_settings.plan,
+            answer_rules=AnswerRules(
+                account_address=settings.gmail_address, manager_address=settings.manager_address
+            ),
+            manager_address=settings.manager_or_account,
+            fact_settings=inbox_settings.facts,
         )
     )
     processor = InboxProcessor(
@@ -72,14 +92,14 @@ def build(settings: Settings) -> Service:
             mailbox=mailbox,
             calendar=google.calendar,
             store=store,
-            audit=JsonlAuditLog(data_dir / AUDIT_FILE_NAME, secrets=secrets, rotation=LOG_ROTATION),
+            audit=audit,
             tracer=tracer,
             clock=clock,
             budget=budget,
             decide=lambda facts: decide(facts, decide_deps),
             executor=executor,
-            approvals=DeferredApprovalOpener(store, tracer),
-            settings=_inbox_settings(settings, zone),
+            approvals=approvals,
+            settings=inbox_settings,
         )
     )
     return Service(
@@ -88,6 +108,7 @@ def build(settings: Settings) -> Service:
             mailbox=mailbox,
             console=JsonConsole(_print_line, Redactor(secrets), clock),
             poll_seconds=settings.poll_seconds,
+            approvals=approvals,
         )
     )
 

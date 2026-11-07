@@ -64,7 +64,7 @@ def test_a_missing_from_gives_an_empty_sender_that_is_never_internal():
         message_id=raw.message_id,
         thread_id=raw.thread_id,
         label_ids=raw.label_ids,
-        rfc822=raw.rfc822.replace(b"From: sender@example.com\n", b""),
+        rfc822=raw.rfc822.replace(b"From: sender@example.com\r\n", b""),
         internal_date=raw.internal_date,
     )
     facts = extract_facts(headerless, SETTINGS)
@@ -445,3 +445,272 @@ def test_one_unreadable_authentication_header_does_not_hide_googles(monkeypatch)
     assert facts_module._all_headers(Message(), "Authentication-Results") == [
         "mx.google.com; dmarc=fail"
     ]
+
+
+# One From with one address: anything else lets the address AECA reads differ from the one
+# Gmail's DMARC result was judged for.
+
+
+def raw_with_headers(header_lines: str) -> RawEmail:
+    rfc822 = (header_lines + "Subject: APPROVE\r\n\r\nAPPROVE\r\n").encode()
+    return RawEmail(
+        message_id="m1",
+        thread_id="t1",
+        label_ids=frozenset({"INBOX"}),
+        rfc822=rfc822,
+        internal_date=datetime(2026, 11, 7, 9, 0, tzinfo=UTC),
+    )
+
+
+# Review C1: Python reduces each of these to the single address boss@example.com, keeping only a
+# defect to show it dropped the rest. Gmail may judge DMARC on another part of the header.
+DEFECTIVE_FROM_LINES = [
+    "From: boss@example.com <attacker@example.com>\r\n",
+    "From: <boss@example.com> attacker@example.com\r\n",
+    "From: boss@example.com (Boss) <attacker@example.com>\r\n",
+    "From: Boss <boss@example.com>attacker@example.com\r\n",
+    "From: boss@example.com;attacker@example.com\r\n",
+    "From: boss@example.com\r\n\t<attacker@example.com>\r\n",
+]
+DEFECTIVE_FROM_IDS = ["addr-then-angle", "angle-then-addr", "comment-then-angle", "angle-glued",
+                      "semicolon", "folded"]  # fmt: skip
+LEGITIMATE_FROM_LINES = [
+    "From: boss@example.com\r\n",
+    "From: Boss <boss@example.com>\r\n",
+    'From: "Boss, The" <boss@example.com>\r\n',
+    "From: =?utf-8?Q?Ionel_C=C3=AEmpan?= <boss@example.com>\r\n",
+    "From: boss@example.com (Boss)\r\n",
+    'From: "A display name long enough to be folded"\r\n <boss@example.com>\r\n',
+    "From: <boss@example.com>\r\n",
+]
+
+
+@pytest.mark.parametrize("header_lines", LEGITIMATE_FROM_LINES)
+def test_every_ordinary_from_is_a_single_sender(header_lines):
+    facts = extract_facts(raw_with_headers(header_lines), SETTINGS)
+
+    assert facts.single_sender
+    assert facts.sender == "boss@example.com"
+
+
+def test_one_from_with_one_address_is_a_single_sender():
+    assert extract_facts(make_raw(sender='"Boss" <boss@example.com>'), SETTINGS).single_sender
+
+
+@pytest.mark.parametrize(
+    "header_lines",
+    [
+        "From: boss@example.com, attacker@evil.example\r\n",
+        "From: boss@example.com\r\nFrom: attacker@evil.example\r\n",
+        "From: Team: boss@example.com, attacker@evil.example;\r\n",
+        "From: \r\n",
+        "",
+        *DEFECTIVE_FROM_LINES,
+    ],
+    ids=["two-addresses", "two-from-headers", "group", "empty", "none", *DEFECTIVE_FROM_IDS],
+)
+def test_anything_else_is_not_a_single_sender(header_lines):
+    assert not extract_facts(raw_with_headers(header_lines), SETTINGS).single_sender
+
+
+# Ruling R40: an ambiguous From never counts as internal, however its DMARC result reads.
+
+COMPANY_PASS = "Authentication-Results: mx.google.com; dmarc=pass header.from=company.com\r\n"
+AMBIGUOUS_COMPANY_FROM_LINES = [
+    "From: boss@company.com, attacker@evil.example\r\n",
+    "From: boss@company.com\r\nFrom: attacker@evil.example\r\n",
+    "From: boss@company.com <attacker@company.com>\r\n",
+    "From: boss@company.com;attacker@company.com\r\n",
+    "From: boss@company.com\r\n\t<attacker@company.com>\r\n",
+]
+
+
+@pytest.mark.parametrize("settings", [BOSS_ONLY, SETTINGS], ids=["listed", "list-empty"])
+@pytest.mark.parametrize("from_lines", AMBIGUOUS_COMPANY_FROM_LINES)
+def test_an_ambiguous_from_never_counts_as_internal(from_lines, settings):
+    facts = extract_facts(raw_with_headers(COMPANY_PASS + from_lines), settings)
+
+    assert facts.auth.dmarc == "pass"
+    assert not facts.internal
+
+
+def test_a_single_listed_sender_with_dmarc_pass_is_still_internal():
+    facts = extract_facts(raw_with_headers(COMPANY_PASS + "From: boss@company.com\r\n"), BOSS_ONLY)
+
+    assert facts.internal
+
+
+# Ruling R42: a raw UTF-8 display name (charset defect only, on one well-formed address) is
+# accepted; any structural defect, or undecodable bytes in the address itself, is not.
+
+RAW_UTF8_NAME_LINES = [
+    "From: Jürgen Müller <boss@company.com>\r\n",
+    'From: "Jürgen Müller" <boss@company.com>\r\n',
+]
+RAW_UTF8_WITH_A_STRUCTURAL_DEFECT_LINES = [
+    "From: Jürgen <boss@company.com> attacker@company.com\r\n",
+    "From: boss@company.com ü <attacker@company.com>\r\n",
+    "From: Jü <boss@company.com>;attacker@company.com\r\n",
+    "From: Jü <boss@company.com>, Mü <attacker@company.com>\r\n",
+    "From: Boss <boss@company.comÿ>\r\n",
+]
+
+
+@pytest.mark.parametrize("from_line", RAW_UTF8_NAME_LINES)
+def test_a_raw_utf8_display_name_on_one_address_is_a_single_internal_sender(from_line):
+    facts = extract_facts(raw_with_headers(COMPANY_PASS + from_line), BOSS_ONLY)
+
+    assert (facts.single_sender, facts.sender, facts.internal) == (True, "boss@company.com", True)
+
+
+@pytest.mark.parametrize("from_line", RAW_UTF8_WITH_A_STRUCTURAL_DEFECT_LINES)
+def test_a_raw_utf8_name_with_a_structural_defect_is_still_refused(from_line):
+    facts = extract_facts(raw_with_headers(COMPANY_PASS + from_line), BOSS_ONLY)
+
+    assert not facts.single_sender
+    assert not facts.internal
+
+
+# Ruling R43: message-level defects and bare line ends make the sender ambiguous, never internal.
+
+MESSAGE_LEVEL_COMPANY_FORGERIES = [
+    "From : attacker@company.com\r\nFrom: boss@company.com\r\n",
+    "From: boss@company.com\r\nFrom : attacker@company.com\r\n",
+    "From: boss@company.com\rX-y: <attacker@company.com>\r\n",
+    "From: boss@company.com\r<attacker@company.com>\r\n",
+    "From: boss@company.com\n<attacker@company.com>\r\n",
+    "From: boss@company.com\r\nX-y: a\nb\r\n",
+]
+
+
+@pytest.mark.parametrize("settings", [BOSS_ONLY, SETTINGS], ids=["listed", "list-empty"])
+@pytest.mark.parametrize("from_lines", MESSAGE_LEVEL_COMPANY_FORGERIES)
+def test_a_message_level_header_defect_makes_the_sender_ambiguous(from_lines, settings):
+    facts = extract_facts(raw_with_headers(COMPANY_PASS + from_lines), settings)
+
+    assert (facts.single_sender, facts.internal) == (False, False)
+
+
+def test_a_bare_line_end_in_the_body_is_not_a_header_defect():
+    raw = raw_with_headers(COMPANY_PASS + "From: boss@company.com\r\n")
+    with_bare_ends = raw.rfc822 + b"line one\nline two\rline three\r\n"
+    facts = extract_facts(
+        RawEmail(
+            message_id=raw.message_id,
+            thread_id=raw.thread_id,
+            label_ids=raw.label_ids,
+            rfc822=with_bare_ends,
+            internal_date=raw.internal_date,
+        ),
+        BOSS_ONLY,
+    )
+
+    assert (facts.single_sender, facts.internal) == (True, True)
+
+
+def test_a_test_email_is_built_with_crlf_line_ends_as_gmail_hands_them_over():
+    header_block = make_raw().rfc822.split(b"\r\n\r\n", 1)[0]
+
+    assert b"\r\n" in header_block
+    assert b"\n" not in header_block.replace(b"\r\n", b"")
+
+
+def test_a_clean_proton_shaped_message_is_still_a_single_internal_sender():
+    proton_pass = (
+        "Authentication-Results: mx.google.com;\r\n"
+        "       dkim=pass header.i=@protonmail.com header.s=protonmail3 header.b=AbCdEf12;\r\n"
+        "       spf=pass smtp.mailfrom=ionel.cimpan@protonmail.com;\r\n"
+        "       dmarc=pass (p=QUARANTINE sp=QUARANTINE dis=NONE) header.from=protonmail.com\r\n"
+    )
+    from_line = "From: =?utf-8?Q?Ionel_C=C3=AEmpan?= <ionel.cimpan@protonmail.com>\r\n"
+    listed = FactSettings("aeca@gmail.com", frozenset({"ionel.cimpan@protonmail.com"}), frozenset())
+
+    facts = extract_facts(raw_with_headers(proton_pass + from_line), listed)
+
+    assert (facts.single_sender, facts.internal, facts.auth.dmarc_domain) == (
+        True,
+        True,
+        "protonmail.com",
+    )
+
+
+# Fix round 3: exactly one From header line in the raw header block, wherever a second one sits.
+# As the last header line, `From :` raises no defect: Python moves it into the body or preamble.
+
+PLAIN_CONTENT = "Content-Type: text/plain; charset=utf-8\r\n"
+MULTIPART_CONTENT = 'MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary="b"\r\n'
+MULTIPART_PARTS = (
+    "--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nAPPROVE\r\n"
+    "--b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<div>APPROVE</div>\r\n--b--\r\n"
+)
+FIRST_HEADERS = COMPANY_PASS + "From: boss@company.com\r\nTo: aeca@gmail.com\r\nSubject: Re: x\r\n"
+
+
+def raw_from_text(text: str) -> RawEmail:
+    return RawEmail(
+        message_id="m1",
+        thread_id="t1",
+        label_ids=frozenset({"INBOX"}),
+        rfc822=text.encode(),
+        internal_date=datetime(2026, 11, 7, 9, 0, tzinfo=UTC),
+    )
+
+
+def with_a_last_header(last: str, *, multipart: bool) -> RawEmail:
+    """`last` is the header line right before the blank line that ends the headers."""
+    content, body = (
+        (MULTIPART_CONTENT, MULTIPART_PARTS) if multipart else (PLAIN_CONTENT, "APPROVE\r\n")
+    )
+    return raw_from_text(FIRST_HEADERS + content + last + "\r\n\r\n" + body)
+
+
+LAST_HEADER_SECOND_FROM_LINES = [
+    "From : attacker@company.com",
+    "FROM : attacker@company.com",
+    "From\t: attacker@company.com",
+    "From  : attacker@company.com",
+]
+
+
+@pytest.mark.parametrize("multipart", [False, True], ids=["single-part", "multipart"])
+@pytest.mark.parametrize("last", LAST_HEADER_SECOND_FROM_LINES)
+def test_a_second_from_as_the_last_header_line_makes_the_sender_ambiguous(last, multipart):
+    raw = with_a_last_header(last, multipart=multipart)
+
+    for settings in (BOSS_ONLY, SETTINGS):
+        facts = extract_facts(raw, settings)
+        assert (facts.single_sender, facts.internal) == (False, False)
+
+
+@pytest.mark.parametrize(
+    "first_line",
+    ["From : attacker@company.com\r\n", "FROM: attacker@company.com\r\n"],
+    ids=["from-space-colon-first", "uppercase-first"],
+)
+def test_a_second_from_as_the_first_header_line_makes_the_sender_ambiguous(first_line):
+    raw = raw_with_headers(first_line + COMPANY_PASS + "From: boss@company.com\r\n")
+
+    facts = extract_facts(raw, BOSS_ONLY)
+
+    assert (facts.single_sender, facts.internal) == (False, False)
+
+
+def test_a_clean_multipart_reply_with_one_from_line_is_still_a_single_internal_sender():
+    raw = with_a_last_header("X-Mailer: ProtonMail", multipart=True)
+
+    facts = extract_facts(raw, BOSS_ONLY)
+
+    assert (facts.single_sender, facts.internal) == (True, True)
+
+
+def test_from_inside_a_header_value_or_a_body_part_is_not_a_from_line():
+    headers = (
+        "Subject: Re: from: you\r\nX-Original-From: x@y.example\r\n"
+        "X-Note: forwarded\r\n from: z@y.example\r\n"
+    )
+    part_with_a_from = MULTIPART_PARTS.replace(
+        "Content-Type: text/plain", "From: inside@a.part\r\nContent-Type: text/plain", 1
+    )
+    raw = raw_from_text(FIRST_HEADERS + headers + MULTIPART_CONTENT + "\r\n" + part_with_a_from)
+
+    assert extract_facts(raw, BOSS_ONLY).single_sender
