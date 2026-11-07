@@ -1,0 +1,28 @@
+import re
+
+from aeca.domain.ids import action_key, approval_id, event_id
+
+EVENT_ID_ALPHABET = re.compile(r"^[a-v0-9]{5,1024}$")
+
+
+def test_event_id_alphabet_and_stability() -> None:
+    first = event_id("gmail-1", 0)
+
+    assert EVENT_ID_ALPHABET.match(first)
+    assert first.startswith("aeca") and len(first) == 4 + 26
+    assert first == event_id("gmail-1", 0)
+
+
+def test_ids_differ_by_attempt() -> None:
+    assert event_id("gmail-1", 0) != event_id("gmail-1", 1)
+    assert approval_id("gmail-1", 0) != approval_id("gmail-1", 1)
+
+
+def test_ids_differ_by_source_message() -> None:
+    assert action_key("gmail-1", "archive") != action_key("gmail-2", "archive")
+    assert action_key("gmail-1", "archive") != action_key("gmail-1", "star")
+
+
+def test_ids_have_their_documented_shape() -> None:
+    assert re.fullmatch(r"k-[0-9a-f]{16}", action_key("gmail-1", "archive"))
+    assert re.fullmatch(r"a-[0-9a-f]{12}", approval_id("gmail-1", 0))
