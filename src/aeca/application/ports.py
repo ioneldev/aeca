@@ -1,5 +1,6 @@
 """What the application needs from the outside world. Adapters implement these."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -7,7 +8,11 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
+from aeca.domain.calendar_event import CalendarEvent, NewEvent
+from aeca.domain.email import RawEmail
 from aeca.domain.errors import AecaError
+from aeca.domain.outgoing import OutgoingMessage, SentMessage
+from aeca.domain.time_range import Interval
 
 DEFAULT_MAX_TOKENS = 16000
 
@@ -97,4 +102,68 @@ class LLMClient(Protocol):
     def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> tuple[T, LLMResponse]:
         """Raises ProviderError when the call fails or is refused, and ReplyUnusable when the
         reply does not fit the schema."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class MessageSummary:
+    """One message of a thread, read from its headers alone. A thread cannot be read raw."""
+
+    message_id: str
+    thread_id: str
+    label_ids: frozenset[str]
+    internal_date: datetime
+    sender: str
+    aeca_kind: str | None
+    aeca_id: str | None
+
+
+class Mailbox(Protocol):
+    """The one Gmail account. Every change applies to one message, never to a thread.
+
+    Raises SystemWideError, CredentialsRevoked or EmailError, never a Google exception.
+    """
+
+    def address(self) -> str: ...
+
+    def unprocessed_inbox(self, limit: int) -> list[str]:
+        """Ids of Inbox messages not yet labelled AECA/processed, oldest first."""
+        ...
+
+    def get(self, message_id: str) -> RawEmail: ...
+
+    def thread_summaries(self, thread_id: str) -> list[MessageSummary]:
+        """Every message of the thread, oldest first."""
+        ...
+
+    def ensure_labels(self, names: Sequence[str]) -> None: ...
+
+    def modify(self, message_id: str, add: Sequence[str], remove: Sequence[str]) -> None: ...
+
+    def create_draft(self, message: OutgoingMessage) -> str:
+        """The draft's id."""
+        ...
+
+    def draft_exists(self, draft_id: str) -> bool: ...
+
+    def send_draft(self, draft_id: str) -> SentMessage: ...
+
+
+class Calendar(Protocol):
+    """The account's primary calendar. Raises the same errors as Mailbox."""
+
+    def time_zone(self) -> str: ...
+
+    def events(self, window: Interval) -> list[CalendarEvent]:
+        """Single events in the window, recurring ones expanded, cancelled ones left out."""
+        ...
+
+    def get_event(self, event_id: str) -> CalendarEvent | None:
+        """None when no such event exists. A cancelled event comes back with cancelled=True."""
+        ...
+
+    def event_by_ical_uid(self, uid: str) -> CalendarEvent | None: ...
+
+    def insert_event(self, event: NewEvent) -> None:
+        """Creates an event with no attendees, so Google sends no invitation."""
         ...

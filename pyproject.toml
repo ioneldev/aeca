@@ -36,7 +36,7 @@ strict = true
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["googleapiclient.*", "google_auth_oauthlib.*"]
+module = ["googleapiclient.*", "google_auth_oauthlib.*", "google_auth_httplib2", "httplib2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
