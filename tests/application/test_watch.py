@@ -16,7 +16,7 @@ from fakes.recording_tracer import RecordingTracer
 from fakes.scripted_model import ScriptedModel
 from support.audit_lines import line_for
 from support.facts import make_facts
-from support.quiet_service import nothing_to_start
+from support.quiet_service import NoCopyLock, NoHeartbeat, nothing_to_start
 
 from aeca.adapters.sqlite_state import SqliteState
 from aeca.application.budget import Budget, StoreLedger
@@ -108,6 +108,8 @@ class Rig:
                     )
                 ),
                 start_up=nothing_to_start,
+                copy_lock=NoCopyLock(),
+                heartbeat=NoHeartbeat(),
             )
         )
 

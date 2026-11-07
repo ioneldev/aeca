@@ -13,6 +13,7 @@ from aeca.domain.calendar_event import CalendarEvent, NewEvent
 from aeca.domain.email import RawEmail
 from aeca.domain.errors import AecaError
 from aeca.domain.facts import EmailFacts
+from aeca.domain.lease import LeaseRequest, LeaseResult
 from aeca.domain.outgoing import OutgoingMessage, SentMessage
 from aeca.domain.time_range import Interval
 
@@ -200,4 +201,18 @@ class ApprovalOpener(Protocol):
 
         A resume calls it again for the same email after a crash, so for the same source and
         attempt it returns the approval already opened, whatever its state, and opens no other."""
+        ...
+
+
+class Lease(Protocol):
+    """The lock that lets one copy of AECA process the inbox. Raises the same errors as Mailbox."""
+
+    def acquire(self, request: LeaseRequest) -> LeaseResult:
+        """Takes the lock unless another copy's fresh heartbeat holds it; then changes nothing."""
+        ...
+
+    def still_held(self, copy_id: str) -> bool: ...
+
+    def renew(self, copy_id: str, now: datetime) -> None:
+        """Raises LockLost when the lock is no longer this copy's."""
         ...

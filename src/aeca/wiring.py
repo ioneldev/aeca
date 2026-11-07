@@ -7,7 +7,9 @@ from aeca.adapters.anthropic_client import AnthropicClient
 from aeca.adapters.audit_log import JsonlAuditLog
 from aeca.adapters.clock import SystemClock
 from aeca.adapters.console import JsonConsole
+from aeca.adapters.copy_id_file import load_or_create_copy_id
 from aeca.adapters.google_services import GoogleServices, build_google_services
+from aeca.adapters.heartbeat_file import HeartbeatFile
 from aeca.adapters.models_file import load_models
 from aeca.adapters.redactor import Redactor
 from aeca.adapters.rotating_log import Rotation
@@ -15,6 +17,7 @@ from aeca.adapters.sqlite_state import SqliteState
 from aeca.adapters.tracer import JsonlTracer
 from aeca.application.approvals import ApprovalDeps, ApprovalService
 from aeca.application.budget import Budget, StoreLedger
+from aeca.application.copy_lock import CopyLock, CopyLockDeps
 from aeca.application.decide import DecideDeps, decide
 from aeca.application.executor import Executor, ExecutorDeps
 from aeca.application.incidents import Incidents, IncidentsDeps
@@ -50,6 +53,7 @@ def build(settings: Settings) -> Service:
         secrets=secrets,
         rotation=LOG_ROTATION,
         debug_enabled=settings.debug_log,
+        debug_days=settings.debug_log_days,
         clock=clock,
     )
     google = build_google_services(settings)
@@ -121,6 +125,15 @@ def build(settings: Settings) -> Service:
             manager_address=settings.manager_or_account,
         )
     )
+    copy_lock = CopyLock(
+        CopyLockDeps(
+            lease=google.lease,
+            clock=clock,
+            copy_id=load_or_create_copy_id(data_dir),
+            poll_seconds=settings.poll_seconds,
+            force=settings.force_lock,
+        )
+    )
     startup_work = StartUpWork(
         checks=StartupDeps(
             mailbox=mailbox,
@@ -141,6 +154,7 @@ def build(settings: Settings) -> Service:
         ),
         store=store,
         incidents=incidents,
+        acquire_lock=copy_lock.acquire,
     )
     return Service(
         ServiceDeps(
@@ -158,6 +172,8 @@ def build(settings: Settings) -> Service:
                 )
             ),
             start_up=lambda: start_up(startup_work),
+            copy_lock=copy_lock,
+            heartbeat=HeartbeatFile(data_dir, clock),
         )
     )
 

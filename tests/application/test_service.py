@@ -5,7 +5,7 @@ import pytest
 from fakes.fake_mailbox import FakeMailbox
 from fakes.recording_console import RecordingConsole
 from support.audit_lines import line_for
-from support.quiet_service import nothing_to_start, quiet_watch
+from support.quiet_service import NoCopyLock, NoHeartbeat, nothing_to_start, quiet_watch
 
 from aeca.application.decide import BudgetExhausted
 from aeca.application.ports import ProviderError
@@ -72,6 +72,8 @@ class Rig:
                 approvals=self.approvals,
                 watch=quiet_watch(),
                 start_up=nothing_to_start,
+                copy_lock=NoCopyLock(),
+                heartbeat=NoHeartbeat(),
             )
         )
 
@@ -259,6 +261,8 @@ def test_run_waits_on_the_stop_event_so_a_stop_is_prompt(rig: Rig) -> None:
             approvals=rig.approvals,
             watch=quiet_watch(),
             start_up=nothing_to_start,
+            copy_lock=NoCopyLock(),
+            heartbeat=NoHeartbeat(),
         )
     )
 

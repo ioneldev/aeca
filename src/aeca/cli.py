@@ -10,10 +10,12 @@ from pathlib import Path
 from aeca.adapters.clock import SystemClock
 from aeca.adapters.env_file import set_env_value
 from aeca.adapters.google_auth import ConsentRequest, run_consent
+from aeca.adapters.heartbeat_file import HEARTBEAT_FILE_NAME, read_heartbeat
 from aeca.adapters.sqlite_state import StateNeedsMigration, read_awaiting_approvals
 from aeca.domain.actions import Action
 from aeca.domain.approval import Approval
 from aeca.domain.errors import AecaError
+from aeca.domain.lease import is_fresh, stale_after
 from aeca.settings import load_settings
 from aeca.tools.tool_commands import add_tool_commands
 from aeca.wiring import AUDIT_FILE_NAME, STATE_FILE_NAME, build
@@ -21,6 +23,8 @@ from aeca.wiring import AUDIT_FILE_NAME, STATE_FILE_NAME, build
 REFRESH_TOKEN_VARIABLE = "GOOGLE_REFRESH_TOKEN"
 DATA_DIR_VARIABLE = "AECA_DATA_DIR"
 DEFAULT_DATA_DIR = "/data"
+POLL_SECONDS_VARIABLE = "POLL_SECONDS"
+DEFAULT_POLL_SECONDS = 30
 
 # The seams the tests replace, so a test never builds the Google and Anthropic clients, and
 # reads a fixed time.
@@ -52,6 +56,8 @@ def _parser() -> argparse.ArgumentParser:
     auth.set_defaults(handler=_auth)
     run = commands.add_parser("run", help="watch the inbox until stopped")
     run.set_defaults(handler=_run)
+    health = commands.add_parser("health", help="exit 0 when AECA polled recently (for Docker)")
+    health.set_defaults(handler=_health)
     audit = commands.add_parser("audit", help="print the audit log")
     audit.set_defaults(handler=_audit)
     approvals = commands.add_parser(
@@ -92,6 +98,30 @@ def _run(_arguments: argparse.Namespace) -> int:
 def _stop_on_signals(stop: threading.Event) -> None:
     for number in (signal.SIGTERM, signal.SIGINT):
         signal.signal(number, lambda _number, _frame: stop.set())
+
+
+# Reads the heartbeat file and POLL_SECONDS alone: Docker runs this every 30 s, and it must not
+# need a credential, a network or the state file.
+def _health(_arguments: argparse.Namespace) -> int:
+    path = _data_dir() / HEARTBEAT_FILE_NAME
+    written_at = read_heartbeat(path)
+    if written_at is None:
+        print(f"unhealthy: no readable heartbeat at {path}")
+        return 1
+    now = clock.now()
+    limit = stale_after(_poll_seconds())
+    if is_fresh(written_at, now, limit):
+        return 0
+    limit_seconds = int(limit.total_seconds())
+    print(f"unhealthy: last poll at {written_at.isoformat()}, limit {limit_seconds} s")
+    return 1
+
+
+def _poll_seconds() -> float:
+    try:
+        return float(os.environ.get(POLL_SECONDS_VARIABLE) or DEFAULT_POLL_SECONDS)
+    except ValueError:
+        return DEFAULT_POLL_SECONDS
 
 
 # Reads the data directory alone, so the audit can be shown without any credential.

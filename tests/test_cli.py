@@ -14,7 +14,7 @@ from aeca import cli
 from aeca.adapters.sqlite_state import SqliteState
 from aeca.domain.actions import Action, Verb
 from aeca.domain.approval import Approval, ApprovalState
-from aeca.domain.errors import ConfigError, CredentialsRevoked
+from aeca.domain.errors import ConfigError, CredentialsRevoked, LockLost
 from aeca.domain.secret import SecretStr
 
 
@@ -289,3 +289,77 @@ def test_approvals_never_migrates_an_older_state_file(
         "The state file is from an older AECA: start AECA once to migrate the state file.\n"
     )
     assert path.read_bytes() == before
+
+
+# --- aeca health: the heartbeat file and POLL_SECONDS alone ---
+
+
+def _heartbeat_written(tmp_path: Path, *, seconds_ago: int) -> None:
+    written_at = FIXED_NOW - timedelta(seconds=seconds_ago)
+    (tmp_path / "heartbeat").write_text(written_at.isoformat() + "\n")
+
+
+@pytest.fixture
+def health_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    for name in ("GMAIL_ADDRESS", "GOOGLE_CLIENT_ID", "ANTHROPIC_API_KEY", "POLL_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AECA_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "clock", FixedClock())
+    return tmp_path
+
+
+def test_health_passes_when_the_heartbeat_is_younger_than_three_polls(
+    health_environment: Path,
+) -> None:
+    _heartbeat_written(health_environment, seconds_ago=89)
+
+    assert cli.main(["health"]) == 0
+
+
+def test_health_fails_when_the_heartbeat_is_older_than_three_polls(
+    health_environment: Path,
+) -> None:
+    _heartbeat_written(health_environment, seconds_ago=90)
+
+    assert cli.main(["health"]) == 1
+
+
+def test_health_follows_poll_seconds_from_the_environment(
+    health_environment: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POLL_SECONDS", "60")
+    _heartbeat_written(health_environment, seconds_ago=120)
+
+    assert cli.main(["health"]) == 0
+
+
+def test_health_fails_when_there_is_no_heartbeat_file(
+    health_environment: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["health"]) == 1
+    assert "heartbeat" in capsys.readouterr().out
+
+
+def test_health_fails_when_the_heartbeat_is_far_in_the_future(health_environment: Path) -> None:
+    _heartbeat_written(health_environment, seconds_ago=-91)
+
+    assert cli.main(["health"]) == 1
+
+
+def test_a_lost_lock_exits_one_with_its_next_action(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    run_environment: None,
+    restored_signal_handlers: None,
+) -> None:
+    class LosesTheLock:
+        def run(self, _stop: threading.Event) -> None:
+            raise LockLost.for_a_lost_lock()
+
+    monkeypatch.setattr(cli, "build_service", lambda _settings: LosesTheLock())
+
+    code = cli.main(["run"])
+
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "no longer holds the inbox lock" in err and "FORCE_LOCK=true" in err

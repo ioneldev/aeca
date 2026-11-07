@@ -11,6 +11,7 @@ import httplib2
 from googleapiclient.discovery import build
 
 from aeca.adapters.gmail import GmailMailbox
+from aeca.adapters.gmail_lease import GmailLease
 from aeca.adapters.google_auth import credentials_from_settings
 from aeca.adapters.google_calendar import GoogleCalendar
 from aeca.adapters.google_seed_calendar import GoogleSeedCalendar
@@ -23,6 +24,7 @@ COMBINED_BUNDLE_NAME = "ca-bundle.pem"
 @dataclass(frozen=True)
 class GoogleServices:
     mailbox: GmailMailbox
+    lease: GmailLease
     calendar: GoogleCalendar
     seed_calendar: GoogleSeedCalendar
 
@@ -31,10 +33,10 @@ def build_google_services(settings: Settings) -> GoogleServices:
     credentials = credentials_from_settings(settings)
     http_factory = _http_factory(settings)
     calendar_service = _service(ServiceSpec("calendar", "v3"), credentials, http_factory)
+    gmail_service = _service(ServiceSpec("gmail", "v1"), credentials, http_factory)
     return GoogleServices(
-        mailbox=GmailMailbox(
-            _service(ServiceSpec("gmail", "v1"), credentials, http_factory), settings.gmail_address
-        ),
+        mailbox=GmailMailbox(gmail_service, settings.gmail_address),
+        lease=GmailLease(gmail_service),
         calendar=GoogleCalendar(calendar_service),
         seed_calendar=GoogleSeedCalendar(calendar_service, settings.gmail_address),
     )
