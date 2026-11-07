@@ -86,7 +86,7 @@ Each setting is an environment variable. A blank value means the default.
 | `SALES_DECLINE_NEEDS_APPROVAL` | false | Makes the sales decline wait for approval. |
 | `MAX_USD_PER_DAY` | 5 | The daily cost cap. |
 | `ALERT_AFTER_FAILURES` | 3 | How many emails in a row must fail before AECA alerts the manager. |
-| `DEBUG_LOG` | false | Switches the debug log on. It would hold full email text, which is personal data, so it is off. |
+| `DEBUG_LOG` | false | Switches the debug log on. It holds full email text, which is personal data, so it is off. |
 | `DEBUG_LOG_DAYS` | 7 | How many days of debug log files are kept. |
 | `EXTRA_CA_CERTS` | empty | A path inside the container to a CA file to trust. See below. |
 | `FORCE_LOCK` | false | Takes the copy lock even when another copy's heartbeat is fresh. Use it only after stopping the other copy. |
@@ -150,7 +150,7 @@ Reply in that thread. Write `APPROVE` or `REJECT` as the first word, above any q
 
 `make logs` follows the same emails as one JSON line each. The files live in the `aeca-data` volume: `audit.jsonl`, `trace.jsonl` (every model call, Google call and retry), and the debug log (below). API keys and tokens are redacted before anything is written.
 
-**The debug log.** With `DEBUG_LOG=true`, AECA may write `debug-YYYY-MM-DD.log` (the UTC day) in the same volume, with full email text, redacted for secrets. Each file rotates at 10 MB, keeping 5, and files older than `DEBUG_LOG_DAYS` days are deleted when a new day's file is opened. Read one with `docker compose exec aeca sh -c 'tail -n 50 /data/debug-*.log'`. **As built, no code path writes a debug line yet, so no file appears.** The setting, the rotation and the clean-up are in place and tested; the lines are not ([limitations](docs/limitations.md)).
+**The debug log.** With `DEBUG_LOG=true`, AECA writes `debug-YYYY-MM-DD.log` (the UTC day) in the same volume. It is off by default because it holds personal data: secrets are redacted, email content is not. For each email the model decides, it holds the email text exactly as the model sees it (headed `email <message id> as the model sees it:`) and each raw model reply, usable or not (headed `reply to <message id>, attempt <n>:`). An email that a rule decides alone writes nothing. Each file rotates at 10 MB, keeping 5, and files older than `DEBUG_LOG_DAYS` days are deleted when a new day's file is opened. Read one with `docker compose exec aeca sh -c 'tail -n 50 /data/debug-*.log'`.
 
 ## What AECA leaves alone
 

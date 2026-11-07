@@ -2,7 +2,7 @@
 
 The short map. The reasoning is in [DESIGN.md](../DESIGN.md) and the [decision records](decisions/README.md).
 
-**Status:** Built and run: the inbox loop, the decision, the policy and planner, the approval loop, the journal, startup checks, the cost cap, incident alerts, the corpus, `make eval`, `make seed-calendar`, `make rehearse`, the health check, the copy lock, graceful stop and `make reset-test`. The debug log's file handling is built, but no step writes to it yet ([limitations](limitations.md)).
+**Status:** Built and run: the inbox loop, the decision, the policy and planner, the approval loop, the journal, startup checks, the cost cap, incident alerts, the corpus, `make eval`, `make seed-calendar`, `make rehearse`, the health check, the copy lock, graceful stop, `make reset-test` and the debug log (`application/decide.py` writes the email as the model sees it and each raw reply).
 
 ## Layers
 
@@ -98,7 +98,7 @@ Why the order: [0031](decisions/0031-every-action-goes-through-one-journal.md), 
 | `trace.jsonl` | `/data` volume | Every step, model call, Google call and retry |
 | `heartbeat` | `/data` volume | The time of the last successful poll, for `aeca health` |
 | `copy-id` | `/data` volume | This installation's id for the copy lock |
-| `debug-YYYY-MM-DD.log` | `/data` volume | With `DEBUG_LOG=true`; rotated, and kept `DEBUG_LOG_DAYS` days. Nothing writes to it yet |
+| `debug-YYYY-MM-DD.log` | `/data` volume | With `DEBUG_LOG=true`; rotated, and kept `DEBUG_LOG_DAYS` days. Holds email text and raw model replies |
 
 ## The commands
 

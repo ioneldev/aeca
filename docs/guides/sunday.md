@@ -9,7 +9,7 @@ Failure handling, production readiness, the docs and the handover. Sunday ends w
 
 ## Built since
 
-- **Task 15:** the health check, graceful stop, the copy lock and `FORCE_LOCK` ([README](../../README.md#health-and-the-copy-lock), [0065](../decisions/0065-the-copy-id-is-persisted-in-the-data-dir.md)). The debug log's file handling is built; no step writes to it yet ([limitations](../limitations.md#the-debug-log)).
+- **Task 15:** the health check, graceful stop, the copy lock and `FORCE_LOCK` ([README](../../README.md#health-and-the-copy-lock), [0065](../decisions/0065-the-copy-id-is-persisted-in-the-data-dir.md))., and the debug log: each decided email as the model sees it, and each raw reply ([limitations](../limitations.md#the-debug-log)).
 - **Task 17:** `make reset-test`, and `make seed-calendar` restoring cancelled seed events ([0061](../decisions/0061-what-reset-test-treats-as-the-rehearsals.md) to [0063](../decisions/0063-a-reseed-restores-cancelled-seed-events.md)).
 
 ## The plan for today

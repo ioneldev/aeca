@@ -48,7 +48,7 @@ What AECA doesn't do, and what each costs. The first four are named in the spec 
 
 ## The debug log
 
-- **`DEBUG_LOG=true` writes nothing yet.** The file name, the rotation and the clean-up by `DEBUG_LOG_DAYS` are built and tested, but no step of AECA calls the debug logger. `trace.jsonl` and `audit.jsonl` are the records.
+- **The debug log holds personal data.** With `DEBUG_LOG=true` it holds each decided email's text as the model sees it, and each raw model reply. Secrets are redacted; email content is not. It is off by default, and files older than `DEBUG_LOG_DAYS` are deleted. An email decided by a rule alone writes nothing to it.
 
 ## Testing
 
