@@ -4,7 +4,12 @@ from support.facts import ACCOUNT_ADDRESS, make_facts
 
 from aeca.domain.facts import FactSettings, extract_facts
 from aeca.domain.labels import Label
-from aeca.domain.replies import ReplyContext, check_urgent_draft, reply_block_reason
+from aeca.domain.replies import (
+    DMARC_FAILED,
+    ReplyContext,
+    check_urgent_draft,
+    reply_block_reason,
+)
 
 
 def context(
@@ -50,6 +55,12 @@ def test_each_rule_gives_its_own_reason() -> None:
     }
 
     assert len(reasons) == 5
+
+
+def test_a_from_spoofed_as_the_account_is_blocked_as_a_dmarc_failure() -> None:
+    facts = make_facts(sender=ACCOUNT_ADDRESS, dmarc="fail")
+
+    assert reply_block_reason(facts, context()) == DMARC_FAILED
 
 
 def test_a_reply_goes_to_from_never_reply_to() -> None:

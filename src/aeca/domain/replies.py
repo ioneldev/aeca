@@ -40,10 +40,12 @@ class ReplyContext:
 def reply_block_reason(facts: EmailFacts, context: ReplyContext) -> str | None:
     if context.label is Label.SPAM:
         return SPAM_SENDER
-    if same_gmail_account(facts.sender, context.account_address):
-        return OWN_ACCOUNT
+    # Before the account's own rule: a From that merely claims the account, and fails DMARC, is a
+    # forgery, refused even with approval. Mail the account really sent itself carries no failure.
     if facts.auth.dmarc == "fail":
         return DMARC_FAILED
+    if same_gmail_account(facts.sender, context.account_address):
+        return OWN_ACCOUNT
     if facts.automated:
         return AUTOMATED_SENDER
     if context.thread_has_unapproved_reply:

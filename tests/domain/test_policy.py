@@ -8,6 +8,7 @@ from support.facts import ACCOUNT_ADDRESS, make_facts
 
 from aeca.domain.actions import Action, Verb
 from aeca.domain.decision import DecidedBy, Decision, Meeting, Window
+from aeca.domain.email import RawEmail
 from aeca.domain.facts import EmailFacts, FactSettings, extract_facts
 from aeca.domain.labels import Label, ReplyKind
 from aeca.domain.meeting_outcome import (
@@ -31,6 +32,9 @@ from aeca.domain.policy import (
 from aeca.domain.replies import (
     AUTOMATED_SENDER,
     DMARC_FAILED,
+    OWN_ACCOUNT,
+    ReplyContext,
+    reply_block_reason,
 )
 from aeca.domain.time_range import Interval
 
@@ -473,6 +477,46 @@ def test_a_meeting_from_a_forged_sender_gets_its_label_only(outcome: MeetingOutc
 
     assert shape(result.automatic) == [("apply_label", "MEETING_REQUEST")]
     assert result.for_approval == () and result.holds == ()
+
+
+SPOOFED_ACCOUNT_DMARC_FAIL = (
+    "mx.google.com; spf=softfail; dkim=none; dmarc=fail (p=NONE) header.from=gmail.com"
+)
+
+
+def planned_meeting_from(raw: RawEmail) -> tuple[str | None, ActionPlan]:
+    """The block and the plan for a meeting with a free slot, from the email as Gmail hands it."""
+    facts = extract_facts(raw, FactSettings(ACCOUNT_ADDRESS, frozenset(), frozenset()))
+    block = reply_block_reason(
+        facts,
+        ReplyContext(
+            label=Label.MEETING_REQUEST,
+            account_address=ACCOUNT_ADDRESS,
+            thread_has_unapproved_reply=False,
+        ),
+    )
+    chosen = decision(Label.MEETING_REQUEST, meeting=MEETING)
+    return block, plan(chosen, facts=facts, meeting=SlotFree(SLOT, False), reply_block=block)
+
+
+def test_a_meeting_spoofed_as_the_account_with_dmarc_failed_gets_its_label_only() -> None:
+    raw = make_raw(sender=ACCOUNT_ADDRESS, authentication_results=[SPOOFED_ACCOUNT_DMARC_FAIL])
+
+    block, result = planned_meeting_from(raw)
+
+    assert block == DMARC_FAILED
+    assert shape(result.automatic) == [("apply_label", "MEETING_REQUEST")]
+    assert result.for_approval == () and result.holds == ()
+
+
+def test_a_meeting_the_account_sent_itself_still_asks_for_the_event_then_the_confirmation() -> None:
+    raw = make_raw(sender=ACCOUNT_ADDRESS, label_ids=("SENT", "INBOX"))
+
+    block, result = planned_meeting_from(raw)
+
+    assert block == OWN_ACCOUNT
+    assert shape(result.for_approval) == [("create_event", ""), ("send_reply", "confirmation")]
+    assert result.holds == (SLOT,)
 
 
 def test_every_step_names_an_existing_predicate_and_verb() -> None:
