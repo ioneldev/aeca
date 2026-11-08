@@ -31,6 +31,7 @@ What AECA doesn't do, and what each costs. The first four are named in the spec 
 - **Approval is all-or-nothing.** One request covers every action it lists. An inline "no" under one step isn't read as rejecting that step.
 - **REJECT only logs** ([0030](decisions/0030-reject-does-nothing.md)).
 - **Approvals don't expire,** so a forgotten one stays open ([0055](decisions/0055-approvals-do-not-expire-but-holds-do.md)).
+- **Offered alternatives stay held until each slot starts** ([0066](decisions/0066-offered-alternatives-stay-held.md)). A requester who picks one by replying in the same thread gets it. One who picks it in a new email, outside that thread, finds it held by their own offer and gets new alternatives.
 
 ## Gmail
 
