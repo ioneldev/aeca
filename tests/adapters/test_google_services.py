@@ -6,7 +6,7 @@ import httplib2
 import pytest
 
 from aeca.adapters import google_services
-from aeca.adapters.google_services import build_google_services
+from aeca.adapters.google_services import GOOGLE_REQUEST_TIMEOUT_SECONDS, build_google_services
 from aeca.domain.errors import ConfigError
 from aeca.settings import load_settings
 
@@ -103,6 +103,25 @@ def test_without_extra_ca_certs_the_defaults_stand(
 
     assert built.https[0].http.ca_certs is None
     assert "SSL_CERT_FILE" not in os.environ
+
+
+def test_both_kinds_of_client_time_out_a_stalled_request(
+    built: RecordingBuild, minimal_run_env: dict[str, str], tmp_path: Path
+) -> None:
+    ca_file = tmp_path / "proxy-ca.pem"
+    ca_file.write_text("-----PROXY CA-----\n")
+
+    build_google_services(load_settings(minimal_run_env, purpose="run"))
+    build_google_services(settings_with_ca(minimal_run_env, ca_file, tmp_path / "data"))
+
+    [default_gmail, default_calendar, bundle_gmail, bundle_calendar] = [
+        authorized.http for authorized in built.https
+    ]
+    assert default_gmail.ca_certs is None and bundle_gmail.ca_certs is not None
+    timeouts = {
+        http.timeout for http in (default_gmail, default_calendar, bundle_gmail, bundle_calendar)
+    }
+    assert timeouts == {GOOGLE_REQUEST_TIMEOUT_SECONDS} == {60}
 
 
 def test_the_ca_tests_leave_the_environment_as_they_found_it() -> None:
