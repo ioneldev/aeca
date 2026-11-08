@@ -5,7 +5,7 @@
 **Decision.**
 - The recipient is the original `From` address. `Reply-To` is ignored.
 - Never to SPAM, never to the account itself, never to a `From` whose DMARC check failed.
-- Never to an automated sender (RFC 3834): `Auto-Submitted` set to anything but `no`; `Precedence` of `bulk`, `list` or `junk`; `List-Id` or `List-Unsubscribe`; a sender on `BULK_SENDERS`; or a local part of `noreply`, `no-reply`, `mailer-daemon` or `postmaster`.
+- Never to an automated sender (RFC 3834): `Auto-Submitted` set to anything but `no`; `Precedence` of `bulk`, `list` or `junk`; `List-Id` or `List-Unsubscribe`; a sender on `BULK_SENDERS`; or a local part, after any `+tag`, of `noreply`, `no-reply`, `mailer-daemon` or `postmaster`, or (after the final review) `do-not-reply`, `donotreply`, or one ending in `-noreply`, `-no-reply` or `_noreply`.
 - At most one reply per thread sent without approval. Approved replies, such as a confirmation, don't count.
 
 **Why.** Phishing uses `Reply-To` to redirect replies. The automated-sender list follows RFC 3834. A reply loop with another auto-responder is one of the anti-goals.

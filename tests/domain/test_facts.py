@@ -170,6 +170,29 @@ def test_automated_senders(headers, sender):
     assert extract_facts(make_raw(sender=sender, headers=headers), s).automated
 
 
+@pytest.mark.parametrize(
+    "sender",
+    [
+        "do-not-reply@x.com",
+        "donotreply@x.com",
+        "notifications-noreply@x.com",
+        "alerts-no-reply@x.com",
+        "billing_noreply@x.com",
+        "noreply+x@x.com",
+        "Do-Not-Reply+receipts@x.com",
+    ],
+)
+def test_more_spellings_of_noreply_are_automated(sender):
+    assert extract_facts(make_raw(sender=sender), SETTINGS).automated
+
+
+@pytest.mark.parametrize(
+    "sender", ["replyall@x.com", "reply@x.com", "noreplyteam@x.com", "no-reply-desk@x.com"]
+)
+def test_a_name_that_merely_contains_reply_is_not_automated(sender):
+    assert not extract_facts(make_raw(sender=sender), SETTINGS).automated
+
+
 def test_auto_submitted_no_is_not_automated():
     assert not extract_facts(make_raw(headers={"Auto-Submitted": "no"}), SETTINGS).automated
 
