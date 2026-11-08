@@ -59,8 +59,8 @@ Full list: [docs/limitations.md](docs/limitations.md).
 
 ## Future ideas
 
-- **Rules a user can edit (Ionel):** the policy records load from a YAML file, validated on load.
-- **New labels (Ionel):** each a record with a name, description, examples, verbs and approvals.
+- **Rules a user can edit:** the policy records load from a YAML file, validated on load.
+- **New labels:** each a record with a name, description, examples, verbs and approvals.
 - Gmail push notifications through Pub/Sub, instead of polling.
 - Learning from the manager: a relabel becomes an example for that sender.
 - A second, independent classification when the model is unsure, taking the safer label if the two disagree.
