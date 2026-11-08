@@ -23,10 +23,10 @@ Code owns the policy. The model labels the email and extracts facts, such as the
 
 ## Set up
 
-You need Docker with the Compose plugin, `make`, and an Anthropic API key. Ionel sends you four values for the AECA inbox: `GMAIL_ADDRESS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN`. On Windows, `make` needs WSL. The image builds on arm64 and amd64.
+You need Docker with the Compose plugin, `make`, and an Anthropic API key. Ionel sends you three values for the AECA inbox: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN`. `.env.example` already holds the inbox's address and every default. On Windows, `make` needs WSL. The image builds on arm64 and amd64.
 
 ```sh
-cp .env.example .env     # put Ionel's four values in it, and your own ANTHROPIC_API_KEY
+cp .env.example .env     # put Ionel's three values in it, and your own ANTHROPIC_API_KEY
 make preflight           # checks Docker, Compose, the daemon and .env
 make image               # builds the image locally; nothing is published
 make start               # runs AECA in the background
@@ -66,11 +66,11 @@ Limits of the lock are in [docs/limitations.md](docs/limitations.md).
 
 ### `.env`
 
-Each setting is an environment variable. A blank value means the default.
+Each setting is an environment variable. A blank value means the default, and `.env.example` writes out each default that is a value. A value with a space in it is quoted, as `WORK_HOURS` is: `uv`, which runs `make seed-calendar`, `rehearse` and `reset-test`, otherwise ignores the whole file.
 
 | Variable | Default | What |
 |---|---|---|
-| `GMAIL_ADDRESS` | required | The AECA inbox. Ionel sends it. It must be the account the token belongs to, ignoring case and Gmail's dots. |
+| `GMAIL_ADDRESS` | required | The AECA inbox, `aecatest74@gmail.com` in `.env.example`. It must be the account the token belongs to, ignoring case and Gmail's dots. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required | The OAuth client. Ionel sends them. |
 | `GOOGLE_REFRESH_TOKEN` | required to run | The token. Ionel sends it. `make auth` writes a new one if it stops working. |
 | `ANTHROPIC_API_KEY` | required to run | The model key. You bring your own. |
