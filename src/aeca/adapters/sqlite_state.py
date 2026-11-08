@@ -349,10 +349,11 @@ class SqliteState:
             )
             self._replace_holds(approval)
 
-    # R16: only an open approval holds its slots, so closing one releases them in the same write.
+    # R16 and record 0066: an approval that stops holding its slots releases them in the same
+    # write that saves its new state.
     def _replace_holds(self, approval: Approval) -> None:
         self._connection.execute("DELETE FROM holds WHERE approval_id = ?", (approval.id,))
-        if not approval.is_open:
+        if not approval.holds_its_slots:
             return
         self._connection.executemany(
             "INSERT INTO holds VALUES (?, ?, ?, ?)",

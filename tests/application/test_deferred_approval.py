@@ -1,5 +1,5 @@
-"""Until the approval service exists, an approval is saved and waits: nothing is sent, and a second
-open for the same email changes nothing."""
+"""The inbox rig's stand-in for the approval service: an approval is saved and waits, nothing is
+sent, and a second open for the same email changes nothing."""
 
 from dataclasses import replace
 from datetime import datetime
@@ -8,10 +8,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fakes.recording_tracer import RecordingTracer
+from support.deferred_approval import DeferredApprovalOpener
 from support.facts import make_facts
 
 from aeca.adapters.sqlite_state import SqliteState
-from aeca.application.deferred_approval import DeferredApprovalOpener
 from aeca.application.ports import OpenApproval
 from aeca.domain.actions import Action, ActionStatus, Verb
 from aeca.domain.approval import ApprovalState

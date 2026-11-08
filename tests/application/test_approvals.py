@@ -15,6 +15,7 @@ from support.approval_rig import (
     COLLEAGUE,
     MANAGER,
     MEETING,
+    MEETING_REQUEST,
     SOURCE_ID,
     SOURCE_THREAD,
     TUESDAY_SLOT,
@@ -26,15 +27,16 @@ from support.emails import make_raw
 from support.inbox_rig import ACCOUNT, BUCHAREST
 
 from aeca.application.ports import OpenApproval
-from aeca.domain.actions import ActionStatus, Verb
+from aeca.domain.actions import Action, ActionStatus, Verb
 from aeca.domain.approval import ApprovalState
 from aeca.domain.audit import AuditLine
 from aeca.domain.calendar_event import CalendarEvent
+from aeca.domain.decision import Decision, Meeting, Window
 from aeca.domain.email import RawEmail
 from aeca.domain.errors import EmailError, SystemWideError
 from aeca.domain.facts import extract_facts
 from aeca.domain.ids import approval_id, event_id
-from aeca.domain.labels import AWAITING, PROCESSED, Label
+from aeca.domain.labels import AWAITING, PROCESSED, SENT, Label, ReplyKind
 from aeca.domain.policy import alternatives_reply
 from aeca.domain.time_range import Interval
 
@@ -595,6 +597,128 @@ def test_a_system_wide_error_while_executing_charges_no_try(rig: ApprovalRig) ->
     assert_executed_once(rig)
 
 
+# --- a restart through production's start-up (spec §4.5, §4.6; final review I1) ---
+
+
+def status_of(rig: ApprovalRig, action: Action) -> ActionStatus:
+    record = rig.store.action_get(action.key)
+    assert record is not None, f"{action.key} was never recorded"
+    return record.status
+
+
+def leave_approved_with_nothing_run(rig: ApprovalRig, cause: str) -> None:
+    """The manager approved, and execution stopped before the event: by a Calendar outage, which
+    ends the tick, or by a kill right after the answer was marked read."""
+    opened(rig)
+    rig.answer("APPROVE")
+    if cause == "outage":
+        outage = SystemWideError("Calendar answered 503", next_action="wait")
+        rig.calendar.insert_failures.append(outage)
+        with pytest.raises(SystemWideError):
+            rig.service.process_all()
+    else:
+        rig.mailbox.kill_after_entry = f"modify:{PROCESSED}"
+        with pytest.raises(Killed):
+            rig.service.process_all()
+
+
+@pytest.mark.parametrize("cause", ["outage", "kill"])
+def test_a_restart_sends_no_confirmation_when_the_event_then_fails_for_this_email(
+    rig: ApprovalRig, cause: str
+) -> None:
+    leave_approved_with_nothing_run(rig, cause)
+    rig.calendar.insert_failures.append(
+        EmailError("Google rejected the event (HTTP 400)", next_action="x")
+    )
+
+    rig.restart_through_start_up()
+    rig.tick()
+
+    [create_event, confirmation] = rig.approval().actions
+    assert rig.calendar.inserted == []
+    assert "confirmation" not in rig.kinds_sent()
+    assert status_of(rig, create_event) is ActionStatus.FAILED
+    assert status_of(rig, confirmation) is ActionStatus.PENDING
+    assert rig.approval().state is ApprovalState.APPROVED
+
+
+def test_start_up_resolves_an_event_left_executing_and_the_next_tick_confirms_once(
+    rig: ApprovalRig,
+) -> None:
+    opened(rig)
+    rig.answer("APPROVE")
+    kill_during_approval(rig, "insert")
+    [create_event, confirmation] = rig.approval().actions
+    rig.store.action_update(create_event.key, ActionStatus.EXECUTING)
+
+    rig.restart_through_start_up()
+    after_start_up = (status_of(rig, create_event), status_of(rig, confirmation))
+    rig.tick()
+
+    assert after_start_up == (ActionStatus.DONE, ActionStatus.PENDING)
+    assert_executed_once(rig)
+
+
+def test_start_up_resolves_a_confirmation_left_executing_whose_draft_was_sent(
+    rig: ApprovalRig,
+) -> None:
+    opened(rig)
+    rig.answer("APPROVE")
+    kill_during_approval(rig, "send:confirmation")
+    [_create_event, confirmation] = rig.approval().actions
+    left = status_of(rig, confirmation)
+
+    rig.restart_through_start_up()
+
+    assert left is ActionStatus.EXECUTING
+    assert status_of(rig, confirmation) is ActionStatus.DONE
+    sent_in_thread = [
+        summary.aeca_kind
+        for summary in rig.mailbox.thread_summaries(SOURCE_THREAD)
+        if SENT in summary.label_ids
+    ]
+    assert sent_in_thread == ["confirmation"]
+    assert rig.kinds_sent().count("confirmation") == 1
+
+
+def test_an_emails_pending_acknowledgement_waits_for_the_journal_resume(
+    rig: ApprovalRig,
+) -> None:
+    rig.inbox.next_decision = decision_of(Label.TASK, reply=ReplyKind.ACKNOWLEDGEMENT)
+    rig.inbox.receive(sender=COLLEAGUE, message_id="m-task", thread_id="t-task")
+    rig.mailbox.kill_after_entry = "modify:TASK"
+    with pytest.raises(Killed):
+        rig.tick()
+    writes_before_the_restart = len(rig.journal)
+
+    rig.restart_through_start_up()
+    sent_at_start_up = rig.kinds_sent()
+    rig.tick()
+
+    assert sent_at_start_up == []
+    assert rig.kinds_sent() == ["acknowledgement"]
+    assert rig.journal[writes_before_the_restart:][:3] == [
+        "modify:TASK",
+        "draft:acknowledgement",
+        "send:acknowledgement",
+    ]
+
+
+@pytest.mark.parametrize("kill", APPROVE_FLOW_KILLS)
+def test_a_kill_while_executing_then_a_restart_through_start_up_executes_once(
+    rig: ApprovalRig, kill: str
+) -> None:
+    opened(rig)
+    rig.answer("APPROVE")
+    kill_during_approval(rig, kill)
+
+    rig.restart_through_start_up()
+    rig.tick()
+    rig.tick()
+
+    assert_executed_once(rig)
+
+
 # --- the re-check on APPROVE (blocking case 3) ---
 
 
@@ -652,6 +776,101 @@ def test_approving_the_new_approval_sends_the_alternatives(rig: ApprovalRig) -> 
     assert rig.approval(1).state is ApprovalState.EXECUTED
     assert rig.kinds_sent().count("alternatives") == 1
     assert rig.calendar.inserted == []
+
+
+# --- the alternatives offered stay held (spec §4.4; record 0066) ---
+
+
+def offer_alternatives(rig: ApprovalRig) -> tuple[Interval, ...]:
+    """The slot fills before APPROVE, so a new approval offers free times instead."""
+    opened(rig)
+    rig.calendar.add(event_at("someone-elses-meeting"))
+    rig.answer("APPROVE")
+    rig.service.process_all()
+    return rig.approval(1).holds
+
+
+def send_the_alternatives(rig: ApprovalRig) -> tuple[Interval, ...]:
+    offered = offer_alternatives(rig)
+    rig.answer("APPROVE", thread_id=rig.request_thread(1))
+    rig.service.process_all()
+    assert rig.kinds_sent().count("alternatives") == 1
+    return offered
+
+
+def held_intervals(rig: ApprovalRig) -> list[Interval]:
+    return [hold.interval for hold in rig.store.holds_active(rig.inbox.clock.now())]
+
+
+def meeting_at(slot: Interval, quote: str) -> Decision:
+    windows = (Window(slot.start, slot.end, quote),)
+    return decision_of(
+        Label.MEETING_REQUEST,
+        meeting=Meeting(title="Sync", duration_minutes=None, windows=windows),
+    )
+
+
+def test_offered_alternatives_stay_held_once_the_offer_is_sent(rig: ApprovalRig) -> None:
+    offered = send_the_alternatives(rig)
+
+    assert rig.approval(1).state is ApprovalState.EXECUTED
+    assert len(offered) == 3
+    assert held_intervals(rig) == list(offered)
+
+
+def test_another_requester_is_never_offered_the_slots_already_offered(rig: ApprovalRig) -> None:
+    offered = send_the_alternatives(rig)
+    rig.inbox.next_decision = MEETING_REQUEST
+    rig.inbox.receive(
+        sender="someone@example.com",
+        subject="Can we meet?",
+        message_id="m-other",
+        thread_id="t-other",
+    )
+
+    rig.inbox.processor.process("m-other")
+
+    other = rig.store.approval_get(approval_id("m-other", 0))
+    assert other is not None and other.holds
+    assert set(other.holds).isdisjoint(offered)
+
+
+def test_the_requesters_own_thread_sees_its_offered_slots_as_free(rig: ApprovalRig) -> None:
+    second = send_the_alternatives(rig)[1]
+    rig.inbox.next_decision = meeting_at(second, "the second one")
+    rig.inbox.receive(
+        sender=COLLEAGUE,
+        subject="Re: Sync?",
+        body="The second one works.",
+        message_id="m-pick",
+        thread_id=SOURCE_THREAD,
+    )
+
+    rig.inbox.processor.process("m-pick")
+
+    picked = rig.store.approval_get(approval_id("m-pick", 0))
+    assert picked is not None
+    create_event = picked.actions[0]
+    assert create_event.verb is Verb.CREATE_EVENT
+    assert datetime.fromisoformat(create_event.args["start"]) == second.start
+
+
+def test_an_offered_slot_that_has_started_blocks_nothing(rig: ApprovalRig) -> None:
+    offered = send_the_alternatives(rig)
+
+    rig.restart_at(offered[0].start)
+
+    assert held_intervals(rig) == list(offered[1:])
+
+
+def test_a_rejected_alternatives_approval_releases_its_holds(rig: ApprovalRig) -> None:
+    offer_alternatives(rig)
+    rig.answer("REJECT", thread_id=rig.request_thread(1))
+
+    rig.service.process_all()
+
+    assert rig.approval(1).state is ApprovalState.REJECTED
+    assert held_intervals(rig) == []
 
 
 def test_a_superseded_urgent_meeting_keeps_its_urgent_quote_in_the_new_approval(

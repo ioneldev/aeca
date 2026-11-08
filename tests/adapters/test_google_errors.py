@@ -8,7 +8,7 @@ import pytest
 from fakes.google_stub import http_error
 from google.auth.exceptions import RefreshError, TransportError
 
-from aeca.adapters.google_errors import classify
+from aeca.adapters.google_errors import classify, execute
 from aeca.domain.errors import AecaError, CredentialsRevoked, EmailError, SystemWideError
 
 
@@ -40,6 +40,18 @@ def test_a_403_for_another_reason_is_specific_to_the_email() -> None:
 )
 def test_connection_errors_are_system_wide(error: Exception) -> None:
     assert type(classify(error)) is SystemWideError
+
+
+class _StalledRequest:
+    """What httplib2 raises once the socket's timeout passes (socket.timeout is TimeoutError)."""
+
+    def execute(self) -> None:
+        raise TimeoutError("timed out")
+
+
+def test_a_request_that_times_out_ends_the_tick_as_system_wide() -> None:
+    with pytest.raises(SystemWideError, match="could not be reached"):
+        execute(_StalledRequest())
 
 
 @pytest.mark.parametrize(

@@ -21,8 +21,8 @@ jobs:
       # Proves no key sits in an image layer. It needs Docker and no secrets.
       - run: uv run pytest -m live tests/test_container.py -q
       # The project itself is not on PyPI, so only its locked dependencies are audited. The lock
-      # already fixes every version, so the audit resolves nothing.
+      # already fixes every version, so the audit resolves nothing. The tool itself is pinned too.
       - name: Audit the locked dependencies
         run: |
           uv export --frozen --no-hashes --no-emit-project --format requirements-txt > requirements.txt
-          uvx pip-audit -r requirements.txt --no-deps --disable-pip
+          uvx pip-audit==2.9.0 -r requirements.txt --no-deps --disable-pip

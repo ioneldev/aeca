@@ -1,7 +1,7 @@
 """Opens an approval without asking anyone yet: it is saved, with its actions and holds, and waits.
 
-It stands in for the approval service, which sends the manager the request, until that exists.
-Nothing it saves can run: an awaiting approval's actions are never resumed.
+The inbox rig's stand-in for the approval service, for tests about the inbox loop alone: no
+request is sent. Nothing it saves can run: an awaiting approval's actions are never resumed.
 """
 
 from aeca.application.ports import OpenApproval, Tracer

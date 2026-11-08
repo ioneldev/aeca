@@ -32,7 +32,12 @@ SENDER_NAME_LIMIT = 500
 REFERENCES_LIMIT = 2000
 REPLY_TO_LIMIT = 500
 HIGH_X_PRIORITIES = frozenset({"1", "2"})
-AUTOMATED_LOCAL_PARTS = frozenset({"noreply", "no-reply", "mailer-daemon", "postmaster"})
+# The spec's list, then the other spellings of "do not reply" that senders use. A local part is
+# matched whole, or by its ending, after any +tag: "replyall" is a person's address.
+AUTOMATED_LOCAL_PARTS = frozenset(
+    {"noreply", "no-reply", "mailer-daemon", "postmaster", "do-not-reply", "donotreply"}
+)
+AUTOMATED_LOCAL_PART_ENDINGS = ("-noreply", "-no-reply", "_noreply")
 GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
 CANONICAL_GMAIL_DOMAIN = "gmail.com"
 MISSING_DEFECTS = "the header records no defects attribute"
@@ -257,7 +262,12 @@ def _has_bulk_headers(message: EmailMessage) -> bool:
 
 
 def _is_automated(message: EmailMessage, sender: str) -> bool:
-    return _declares_auto_submission(message) or sender.partition("@")[0] in AUTOMATED_LOCAL_PARTS
+    return _declares_auto_submission(message) or _has_an_automated_local_part(sender)
+
+
+def _has_an_automated_local_part(sender: str) -> bool:
+    local_part = sender.partition("@")[0].partition("+")[0]
+    return local_part in AUTOMATED_LOCAL_PARTS or local_part.endswith(AUTOMATED_LOCAL_PART_ENDINGS)
 
 
 def _declares_auto_submission(message: EmailMessage) -> bool:

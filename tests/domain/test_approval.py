@@ -2,6 +2,7 @@
 (spec §4.5), and nowhere else."""
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -85,3 +86,30 @@ def test_only_awaiting_and_approved_approvals_are_open() -> None:
     open_states = {state for state in ApprovalState if approval_in(state).is_open}
 
     assert open_states == {ApprovalState.AWAITING, ApprovalState.APPROVED}
+
+
+ALTERNATIVES = Action(verb=Verb.SEND_REPLY, key="k-alt", args={"template": "alternatives"})
+
+
+@pytest.mark.parametrize("state", list(ApprovalState))
+def test_an_approval_that_offers_no_alternatives_holds_its_slots_only_while_open(
+    state: ApprovalState,
+) -> None:
+    assert approval_in(state).holds_its_slots is approval_in(state).is_open
+
+
+def test_an_executed_approval_that_offered_alternatives_keeps_holding_them() -> None:
+    offered = replace(approval_in(ApprovalState.EXECUTED), actions=(ALTERNATIVES,))
+
+    assert offered.holds_its_slots
+
+
+@pytest.mark.parametrize(
+    "state", [ApprovalState.REJECTED, ApprovalState.SUPERSEDED, ApprovalState.FAILED]
+)
+def test_an_alternatives_approval_closed_any_other_way_releases_its_slots(
+    state: ApprovalState,
+) -> None:
+    closed = replace(approval_in(state), actions=(ALTERNATIVES,))
+
+    assert not closed.holds_its_slots

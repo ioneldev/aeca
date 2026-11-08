@@ -20,6 +20,11 @@ from aeca.domain.errors import ConfigError
 from aeca.settings import Settings
 
 COMBINED_BUNDLE_NAME = "ca-bundle.pem"
+# googleapiclient's own default. It sets it only on an Http it builds itself, so handing it ours
+# drops it, and httplib2 alone has no timeout. A stalled connection would then hold the loop for
+# as long as the OS keeps the socket, with no alert, since alerts come from that same loop. A
+# timeout is an OSError, which google_errors classifies as system-wide: the tick backs off.
+GOOGLE_REQUEST_TIMEOUT_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -72,13 +77,13 @@ def _http_factory(settings: Settings) -> Callable[[], httplib2.Http]:
     os.environ["REQUESTS_CA_BUNDLE"] = bundle
 
     def http_trusting_bundle() -> httplib2.Http:
-        return httplib2.Http(ca_certs=bundle)
+        return httplib2.Http(timeout=GOOGLE_REQUEST_TIMEOUT_SECONDS, ca_certs=bundle)
 
     return http_trusting_bundle
 
 
 def _default_http() -> httplib2.Http:
-    return httplib2.Http()
+    return httplib2.Http(timeout=GOOGLE_REQUEST_TIMEOUT_SECONDS)
 
 
 def _write_combined_bundle(extra_ca_certs: Path, data_dir: Path) -> Path:

@@ -36,25 +36,25 @@ auth:
 	docker compose run --rm --service-ports auth
 
 start:
-	@$(PREFLIGHT) env-run
+	@$(PREFLIGHT) docker env-run
 	docker compose up -d aeca
 
 stop:
-	@$(PREFLIGHT) env-run
+	@$(PREFLIGHT) docker env-run
 	docker compose stop aeca
 
 logs:
-	@$(PREFLIGHT) env-run
+	@$(PREFLIGHT) docker env-run
 	docker compose logs -f aeca
 
 # --no-deps and run, not exec, so the audit prints even when the service is stopped.
 audit:
-	@$(PREFLIGHT) env-run
+	@$(PREFLIGHT) docker env-run
 	docker compose run --rm --no-deps aeca audit
 
 # Reads the state file on the volume, so it works whether or not the service is running.
 approvals:
-	@$(PREFLIGHT) env-run
+	@$(PREFLIGHT) docker env-run
 	docker compose run --rm --no-deps aeca approvals
 
 # Test tools. Each checks .env first, then runs with its values; none starts Docker. They run on

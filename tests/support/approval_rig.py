@@ -13,6 +13,8 @@ from fakes.fake_mailbox import FakeMailbox
 from fakes.fixed_clock import FixedClock
 from fakes.memory_audit import MemoryAudit
 from fakes.recording_console import RecordingConsole
+from fakes.recording_incidents import RecordingIncidents
+from fakes.scripted_model import SERVED_MODEL, ScriptedModel
 from support.decisions import decision_of
 from support.emails import make_raw
 from support.inbox_rig import ACCOUNT, BUCHAREST, PLAN_SETTINGS, InboxRig, RigOptions
@@ -22,6 +24,13 @@ from aeca.adapters.sqlite_state import SqliteState
 from aeca.application.approvals import ApprovalDeps, ApprovalService
 from aeca.application.executor import Executor, ExecutorDeps
 from aeca.application.service import Service, ServiceDeps
+from aeca.application.startup import (
+    ExecutorActionResumer,
+    ResumerDeps,
+    StartupDeps,
+    StartUpWork,
+    start_up,
+)
 from aeca.domain.answers import AnswerRules
 from aeca.domain.approval import Approval
 from aeca.domain.decision import Decision, Meeting, Window
@@ -99,14 +108,20 @@ class ApprovalRig:
         self.inbox.restart_with_the_volume_wiped()
         self.service = self._build()
 
+    def restart_through_start_up(self) -> None:
+        """A restart that runs production's start-up before the first tick: the checks, the lock,
+        then whatever start-up resolves."""
+        self.restart()
+        start_up(self._start_up_work())
+
     def restart_at(self, moment: datetime) -> None:
         """A restart whose clock reads `moment`, as if AECA had been down until then."""
         self.inbox.clock = FixedClock(moment)
         self.restart()
 
-    def _build(self) -> ApprovalService:
+    def _executor(self) -> Executor:
         inbox = self.inbox
-        executor = Executor(
+        return Executor(
             ExecutorDeps(
                 mailbox=inbox.mailbox,
                 calendar=inbox.calendar,
@@ -115,12 +130,40 @@ class ApprovalRig:
                 manager_address=self.manager_or_account,
             )
         )
+
+    def _start_up_work(self) -> StartUpWork:
+        inbox = self.inbox
+        return StartUpWork(
+            checks=StartupDeps(
+                mailbox=inbox.mailbox,
+                calendar=inbox.calendar,
+                model=ScriptedModel(),
+                model_name=SERVED_MODEL,
+                gmail_address=ACCOUNT,
+                internal_senders=self.options.internal_senders,
+                console=self.console,
+            ),
+            resumer=ExecutorActionResumer(
+                ResumerDeps(
+                    executor=self._executor(),
+                    mailbox=inbox.mailbox,
+                    fact_settings=self.service_fact_settings(),
+                    tracer=inbox.tracer,
+                )
+            ),
+            store=inbox.store,
+            incidents=RecordingIncidents(),
+            acquire_lock=lambda: None,
+        )
+
+    def _build(self) -> ApprovalService:
+        inbox = self.inbox
         service = ApprovalService(
             ApprovalDeps(
                 mailbox=inbox.mailbox,
                 calendar=inbox.calendar,
                 store=inbox.store,
-                executor=executor,
+                executor=self._executor(),
                 audit=inbox.audit,
                 tracer=inbox.tracer,
                 clock=inbox.clock,

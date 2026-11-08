@@ -391,6 +391,16 @@ def test_saving_an_approval_again_replaces_its_holds(state: SqliteState) -> None
     assert [hold.interval for hold in state.holds_active(NOON)] == [interval_starting_in(180)]
 
 
+def test_an_executed_approval_keeps_the_alternatives_it_offered_held(state: SqliteState) -> None:
+    offered = Action(verb=Verb.SEND_REPLY, key="m1:alt", args={"template": "alternatives"})
+    state.approval_save(approval_of(actions=(offered,), state=ApprovalState.EXECUTED))
+    state.approval_save(
+        approval_of("appr-m2", source_message_id="m2", state=ApprovalState.EXECUTED)
+    )
+
+    assert [hold.approval_id for hold in state.holds_active(NOON)] == ["appr-m1"]
+
+
 # schema refusals
 
 

@@ -58,3 +58,4 @@ One record per decision in the spec, per deviation the plan made on 2026-11-07, 
 - [0063: A re-seed restores cancelled seed events](0063-a-reseed-restores-cancelled-seed-events.md), Claude
 - [0064: The handover ends with a reset dry run](0064-the-handover-ends-with-a-reset-dry-run.md), Claude. Departs from spec §5's order
 - [0065: The copy id is persisted in the data dir](0065-the-copy-id-is-persisted-in-the-data-dir.md), Claude
+- [0066: Offered alternatives stay held until each slot starts](0066-offered-alternatives-stay-held.md), Claude, after the final review. Changes 0025 in part, and departs from one line of spec §4.4

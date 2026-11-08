@@ -12,7 +12,7 @@ from aeca.application.incidents import IncidentKind, IncidentReporter
 from aeca.application.ports import Calendar, LLMClient, Mailbox, Tracer
 from aeca.application.service import Console
 from aeca.application.state_ports import StateStore
-from aeca.domain.actions import ActionRecord
+from aeca.domain.actions import ActionRecord, ActionStatus
 from aeca.domain.errors import ConfigError, EmailError
 from aeca.domain.facts import FactSettings, extract_facts, same_gmail_account
 
@@ -30,7 +30,7 @@ class StartupDeps:
 
 class ActionResumer(Protocol):
     def resume(self, record: ActionRecord) -> bool:
-        """True when the action was run through the executor's key checks."""
+        """True when the action was resolved through the executor's key checks."""
         ...
 
 
@@ -46,11 +46,11 @@ class StartUpWork:
 
 def start_up(work: StartUpWork) -> None:
     startup_checks(work.checks)
-    # Before the resume, which can send: a copy that must not run sends nothing.
+    # Before resolving, which can send a recorded draft: a copy that must not run sends nothing.
     work.acquire_lock()
     # The key just worked, so a refusal recorded by an earlier run is over.
     work.incidents.clear(IncidentKind.KEY_REFUSED)
-    resume_unfinished(work.resumer, work.store)
+    resolve_executing(work.resumer, work.store)
 
 
 def startup_checks(deps: StartupDeps) -> None:
@@ -61,9 +61,20 @@ def startup_checks(deps: StartupDeps) -> None:
     _warn_when_nobody_is_internal(deps)
 
 
-def resume_unfinished(resumer: ActionResumer, store: StateStore) -> int:
-    """Runs every pending or executing action again, before the first poll."""
-    return sum(resumer.resume(record) for record in store.actions_unfinished())
+def resolve_executing(resumer: ActionResumer, store: StateStore) -> int:
+    """Resolves every action a crash left executing by checking its key, before the first poll
+    (spec §4.6). Returns how many were resolved."""
+    return sum(resumer.resume(record) for record in _left_executing(store))
+
+
+# A pending action waits for the ordered paths that run each tick: the journal's resume by message
+# id, and the approved approvals' resume. Run here one at a time, an action would run although one
+# before it failed, such as a confirmation after its event (spec §4.4, §4.5). An executing one is
+# safe alone: execution is in order, so everything before it is done.
+def _left_executing(store: StateStore) -> list[ActionRecord]:
+    return [
+        record for record in store.actions_unfinished() if record.status is ActionStatus.EXECUTING
+    ]
 
 
 def _require_the_token_to_be_for(deps: StartupDeps) -> None:

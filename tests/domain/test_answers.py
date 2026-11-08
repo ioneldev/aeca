@@ -11,7 +11,6 @@ from aeca.domain.answers import (
     Answer,
     AnswerRules,
     answer_of,
-    counts_as_answer,
     parse_answer,
     why_not_an_answer,
 )
@@ -113,19 +112,19 @@ def sent_by_account(**overrides: object) -> EmailFacts:
 
 @pytest.mark.parametrize("rules", [WITH_MANAGER, WITHOUT_MANAGER])
 def test_a_sent_reply_counts_with_or_without_a_manager_address(rules: AnswerRules) -> None:
-    assert counts_as_answer(sent_by_account(), rules)
+    assert why_not_an_answer(sent_by_account(), rules) is None
 
 
 @pytest.mark.parametrize("sender", [MANAGER, "Boss@Example.COM", " boss@example.com "])
 def test_a_manager_reply_with_dmarc_pass_counts(sender: str) -> None:
-    assert counts_as_answer(reply(sender=sender), WITH_MANAGER)
+    assert why_not_an_answer(reply(sender=sender), WITH_MANAGER) is None
 
 
 def test_a_gmail_manager_counts_whatever_its_dots_and_case() -> None:
     rules = AnswerRules(account_address=ACCOUNT, manager_address="the.boss@gmail.com")
     gmail_pass = AuthResults(spf="pass", dkim="pass", dmarc="pass", dmarc_domain="gmail.com")
 
-    assert counts_as_answer(reply(sender="TheBoss@gmail.com", auth=gmail_pass), rules)
+    assert why_not_an_answer(reply(sender="TheBoss@gmail.com", auth=gmail_pass), rules) is None
 
 
 @pytest.mark.parametrize("dmarc", ["fail", "none", "temperror", None])
@@ -134,19 +133,16 @@ def test_a_manager_reply_without_dmarc_pass_does_not_count(dmarc: str | None) ->
         auth=AuthResults(spf="pass", dkim="pass", dmarc=dmarc, dmarc_domain="example.com")
     )
 
-    assert not counts_as_answer(message, WITH_MANAGER)
     assert why_not_an_answer(message, WITH_MANAGER) == "manager_dmarc_not_pass"
 
 
 def test_without_a_manager_address_only_a_sent_reply_counts() -> None:
-    assert not counts_as_answer(reply(), WITHOUT_MANAGER)
     assert why_not_an_answer(reply(), WITHOUT_MANAGER) == "not_sent_by_the_account"
 
 
 def test_a_reply_from_anyone_else_does_not_count_even_with_dmarc_pass() -> None:
     message = reply(sender="someone@example.com")
 
-    assert not counts_as_answer(message, WITH_MANAGER)
     assert why_not_an_answer(message, WITH_MANAGER) == "not_from_the_manager"
 
 
@@ -165,8 +161,8 @@ def test_the_account_address_without_sent_never_counts_even_with_dmarc_pass(
     spoofed = reply(sender="aeca.test@gmail.com")
     dotless = reply(sender="AECATEST@gmail.com")
 
-    assert not counts_as_answer(spoofed, rules)
-    assert not counts_as_answer(dotless, rules)
+    assert why_not_an_answer(spoofed, rules) is not None
+    assert why_not_an_answer(dotless, rules) is not None
 
 
 @pytest.mark.parametrize(
@@ -177,7 +173,6 @@ def test_a_message_with_any_aeca_header_never_counts(kind: str | None, aeca_id: 
         sent_by_account(aeca_kind=kind, aeca_id=aeca_id),
         reply(aeca_kind=kind, aeca_id=aeca_id),
     ):
-        assert not counts_as_answer(message, WITH_MANAGER)
         assert why_not_an_answer(message, WITH_MANAGER) == "carries_aeca_headers"
 
 
@@ -195,14 +190,12 @@ def test_a_manager_reply_whose_dmarc_pass_is_for_another_domain_does_not_count(
 ) -> None:
     message = reply(auth=AuthResults(spf="pass", dkim="pass", dmarc="pass", dmarc_domain=domain))
 
-    assert not counts_as_answer(message, WITH_MANAGER)
     assert why_not_an_answer(message, WITH_MANAGER) == "manager_dmarc_for_another_domain"
 
 
 def test_a_manager_reply_whose_sender_is_ambiguous_does_not_count() -> None:
     message = reply(single_sender=False)
 
-    assert not counts_as_answer(message, WITH_MANAGER)
     assert why_not_an_answer(message, WITH_MANAGER) == "sender_ambiguous"
 
 

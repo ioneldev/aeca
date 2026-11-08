@@ -2,7 +2,7 @@
 
 The short map. The reasoning is in [DESIGN.md](../DESIGN.md) and the [decision records](decisions/README.md).
 
-**Status:** Built and run: the inbox loop, the decision, the policy and planner, the approval loop, the journal, startup checks, the cost cap, incident alerts, the corpus, `make eval`, `make seed-calendar`, `make rehearse`, the health check, the copy lock, graceful stop, `make reset-test` and the debug log (`application/decide.py` writes the email as the model sees it and each raw reply).
+**Status:** Built and run: the inbox loop, the decision, the policy and planner, the approval loop, the journal, startup checks, the cost cap, incident alerts, the corpus, `make eval`, `make seed-calendar`, `make rehearse`, the health check, the copy lock, graceful stop, `make reset-test` and the debug log (`application/decide.py` writes the email as the model sees it, each raw reply, and the text of a suspected injection).
 
 ## Layers
 
@@ -18,7 +18,7 @@ Ports and adapters. Each layer is a folder under `src/aeca/`, and `tests/test_ar
 
 **Domain** (`src/aeca/domain/`): `email`, `facts`, `auth_results`, `links`, `text`, `rules`, `decision`, `validation`, `labels`, `policy`, `actions`, `planner`, `time_range`, `calendar_event` (the event as the planner and reset-test read it), `meeting_outcome`, `approval`, `answers`, `approval_messages`, `replies`, `compose`, `templates`, `outgoing`, `journal`, `ids`, `audit`, `errors`, `secret`, `lease` (who holds the inbox), `rehearsal_mail` and `reset_lock` (what reset-test may touch, and when it must refuse).
 
-**Application** (`src/aeca/application/`): `service` (the tick), `process_email` (one email), `decide`, `decision_prompt` and `prompts/`, `meetings`, `executor`, `approvals`, `deferred_approval`, `watch`, `startup`, `copy_lock`, `budget`, `incidents`, `failures`, `ports` and `state_ports`.
+**Application** (`src/aeca/application/`): `service` (the tick), `process_email` (one email), `decide`, `decision_prompt` and `prompts/`, `meetings`, `executor`, `approvals`, `watch`, `startup`, `copy_lock`, `budget`, `incidents`, `failures`, `ports` and `state_ports`.
 
 **Ports:** `Clock`, `Tracer`, `LLMClient`, `Mailbox`, `Calendar`, `ApprovalOpener`, `StateStore`, `AuditLog`, `IncidentReporter`, `SpendLedger`, `Lease`.
 
@@ -64,7 +64,7 @@ A failure ends one of two ways ([0036](decisions/0036-two-kinds-of-error.md)). A
 4. REJECT: logged. Nothing else happens ([0030](decisions/0030-reject-does-nothing.md)).
 5. An unclear answer gets one help reply.
 
-States: `awaiting → approved → executed | failed`; `awaiting → rejected`; `awaiting → superseded`. Holds are released on REJECT, on supersede, on execution, and when the slot starts.
+States: `awaiting → approved → executed | failed`; `awaiting → rejected`; `awaiting → superseded`. Holds are released on REJECT, on supersede, on failure, on execution, and when the slot starts, except that an executed approval that offered alternatives keeps them until each slot starts ([0066](decisions/0066-offered-alternatives-stay-held.md)).
 
 ## Exactly once
 
@@ -81,7 +81,7 @@ Why the order: [0031](decisions/0031-every-action-goes-through-one-journal.md), 
 
 ## The service loop, the lock and health
 
-`aeca run` sets a stop event on SIGTERM and SIGINT. `Service.run` starts up (`startup`: the checks, then `CopyLock.acquire`, then the resume of unfinished actions), then ticks until the event is set. A tick first calls `ensure_held`, and again before each email and before it records the poll. A lost lock raises `LockLost`, which is not a system-wide error, so the run ends with exit 1.
+`aeca run` sets a stop event on SIGTERM and SIGINT. `Service.run` starts up (`startup`: the checks, then `CopyLock.acquire`, then each action left `executing` is resolved by its key; `pending` ones wait for the tick's ordered resumes), then ticks until the event is set. A tick first calls `ensure_held`, and again before each email and before it records the poll. A lost lock raises `LockLost`, which is not a system-wide error, so the run ends with exit 1.
 
 `domain/lease.py` holds the rule: a heartbeat is fresh for 3 × `POLL_SECONDS`, and one dated further ahead than that is not fresh either. `adapters/gmail_lease.py` stores the lock as the draft `AECA lock`, found with `drafts.list`, with the lowest draft id as the lock. `application/copy_lock.py` renews it on each poll, and between emails once a poll's time has passed. Each renewal also writes the heartbeat file that `aeca health` reads. The copy id comes from `copy-id` in the data directory ([0065](decisions/0065-the-copy-id-is-persisted-in-the-data-dir.md)).
 
@@ -95,7 +95,7 @@ Why the order: [0031](decisions/0031-every-action-goes-through-one-journal.md), 
 |---|---|---|
 | `state.db` | `/data` volume | Approvals, holds, the journal, spend, incidents |
 | `audit.jsonl` | `/data` volume | One line per email and per approval outcome |
-| `trace.jsonl` | `/data` volume | Every step, model call, Google call and retry |
+| `trace.jsonl` | `/data` volume | Model calls (tokens, cost, latency), model retries, corrections and refusals, suspected injections by length, approval requests, resumed emails, and each failure of an action, email, approval, alert or resume. Not each Google call ([limitations](limitations.md)) |
 | `heartbeat` | `/data` volume | The time of the last successful poll, for `aeca health` |
 | `copy-id` | `/data` volume | This installation's id for the copy lock |
 | `debug-YYYY-MM-DD.log` | `/data` volume | With `DEBUG_LOG=true`; rotated, and kept `DEBUG_LOG_DAYS` days. Holds email text and raw model replies |
