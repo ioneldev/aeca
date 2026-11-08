@@ -64,7 +64,7 @@ A failure ends one of two ways ([0036](decisions/0036-two-kinds-of-error.md)). A
 4. REJECT: logged. Nothing else happens ([0030](decisions/0030-reject-does-nothing.md)).
 5. An unclear answer gets one help reply.
 
-States: `awaiting → approved → executed | failed`; `awaiting → rejected`; `awaiting → superseded`. Holds are released on REJECT, on supersede, on execution, and when the slot starts.
+States: `awaiting → approved → executed | failed`; `awaiting → rejected`; `awaiting → superseded`. Holds are released on REJECT, on supersede, on failure, on execution, and when the slot starts, except that an executed approval that offered alternatives keeps them until each slot starts ([0066](decisions/0066-offered-alternatives-stay-held.md)).
 
 ## Exactly once
 

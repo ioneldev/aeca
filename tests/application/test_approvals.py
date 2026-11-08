@@ -15,6 +15,7 @@ from support.approval_rig import (
     COLLEAGUE,
     MANAGER,
     MEETING,
+    MEETING_REQUEST,
     SOURCE_ID,
     SOURCE_THREAD,
     TUESDAY_SLOT,
@@ -30,6 +31,7 @@ from aeca.domain.actions import Action, ActionStatus, Verb
 from aeca.domain.approval import ApprovalState
 from aeca.domain.audit import AuditLine
 from aeca.domain.calendar_event import CalendarEvent
+from aeca.domain.decision import Decision, Meeting, Window
 from aeca.domain.email import RawEmail
 from aeca.domain.errors import EmailError, SystemWideError
 from aeca.domain.facts import extract_facts
@@ -774,6 +776,101 @@ def test_approving_the_new_approval_sends_the_alternatives(rig: ApprovalRig) -> 
     assert rig.approval(1).state is ApprovalState.EXECUTED
     assert rig.kinds_sent().count("alternatives") == 1
     assert rig.calendar.inserted == []
+
+
+# --- the alternatives offered stay held (spec §4.4; record 0066) ---
+
+
+def offer_alternatives(rig: ApprovalRig) -> tuple[Interval, ...]:
+    """The slot fills before APPROVE, so a new approval offers free times instead."""
+    opened(rig)
+    rig.calendar.add(event_at("someone-elses-meeting"))
+    rig.answer("APPROVE")
+    rig.service.process_all()
+    return rig.approval(1).holds
+
+
+def send_the_alternatives(rig: ApprovalRig) -> tuple[Interval, ...]:
+    offered = offer_alternatives(rig)
+    rig.answer("APPROVE", thread_id=rig.request_thread(1))
+    rig.service.process_all()
+    assert rig.kinds_sent().count("alternatives") == 1
+    return offered
+
+
+def held_intervals(rig: ApprovalRig) -> list[Interval]:
+    return [hold.interval for hold in rig.store.holds_active(rig.inbox.clock.now())]
+
+
+def meeting_at(slot: Interval, quote: str) -> Decision:
+    windows = (Window(slot.start, slot.end, quote),)
+    return decision_of(
+        Label.MEETING_REQUEST,
+        meeting=Meeting(title="Sync", duration_minutes=None, windows=windows),
+    )
+
+
+def test_offered_alternatives_stay_held_once_the_offer_is_sent(rig: ApprovalRig) -> None:
+    offered = send_the_alternatives(rig)
+
+    assert rig.approval(1).state is ApprovalState.EXECUTED
+    assert len(offered) == 3
+    assert held_intervals(rig) == list(offered)
+
+
+def test_another_requester_is_never_offered_the_slots_already_offered(rig: ApprovalRig) -> None:
+    offered = send_the_alternatives(rig)
+    rig.inbox.next_decision = MEETING_REQUEST
+    rig.inbox.receive(
+        sender="someone@example.com",
+        subject="Can we meet?",
+        message_id="m-other",
+        thread_id="t-other",
+    )
+
+    rig.inbox.processor.process("m-other")
+
+    other = rig.store.approval_get(approval_id("m-other", 0))
+    assert other is not None and other.holds
+    assert set(other.holds).isdisjoint(offered)
+
+
+def test_the_requesters_own_thread_sees_its_offered_slots_as_free(rig: ApprovalRig) -> None:
+    second = send_the_alternatives(rig)[1]
+    rig.inbox.next_decision = meeting_at(second, "the second one")
+    rig.inbox.receive(
+        sender=COLLEAGUE,
+        subject="Re: Sync?",
+        body="The second one works.",
+        message_id="m-pick",
+        thread_id=SOURCE_THREAD,
+    )
+
+    rig.inbox.processor.process("m-pick")
+
+    picked = rig.store.approval_get(approval_id("m-pick", 0))
+    assert picked is not None
+    create_event = picked.actions[0]
+    assert create_event.verb is Verb.CREATE_EVENT
+    assert datetime.fromisoformat(create_event.args["start"]) == second.start
+
+
+def test_an_offered_slot_that_has_started_blocks_nothing(rig: ApprovalRig) -> None:
+    offered = send_the_alternatives(rig)
+
+    rig.restart_at(offered[0].start)
+
+    assert held_intervals(rig) == list(offered[1:])
+
+
+def test_a_rejected_alternatives_approval_releases_its_holds(rig: ApprovalRig) -> None:
+    offer_alternatives(rig)
+    rig.answer("REJECT", thread_id=rig.request_thread(1))
+
+    rig.service.process_all()
+
+    assert rig.approval(1).state is ApprovalState.REJECTED
+    assert held_intervals(rig) == []
 
 
 def test_a_superseded_urgent_meeting_keeps_its_urgent_quote_in_the_new_approval(

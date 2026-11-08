@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 
-from aeca.domain.actions import Action
+from aeca.domain.actions import Action, Verb
 from aeca.domain.errors import AecaError
 from aeca.domain.time_range import Interval
 
@@ -25,6 +25,8 @@ _NEXT_STATES: Mapping[ApprovalState, frozenset[ApprovalState]] = {
     ApprovalState.APPROVED: frozenset({ApprovalState.EXECUTED, ApprovalState.FAILED}),
 }
 OPEN_STATES = frozenset({ApprovalState.AWAITING, ApprovalState.APPROVED})
+# The reply that offers a requester free times instead of the slot they asked for (spec §4.4).
+ALTERNATIVES_TEMPLATE = "alternatives"
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,20 @@ class Approval:
     @property
     def is_open(self) -> bool:
         return self.state in OPEN_STATES
+
+    # Spec §4.4: a hold is a slot in an unanswered approval, or one offered to a requester, so
+    # that two requesters are never offered the same slot. Executing an alternatives approval is
+    # what offers them, so its holds stay; like every hold, each lapses when its slot starts.
+    @property
+    def holds_its_slots(self) -> bool:
+        return self.is_open or (self.state is ApprovalState.EXECUTED and self._offers_alternatives)
+
+    @property
+    def _offers_alternatives(self) -> bool:
+        return any(
+            action.verb is Verb.SEND_REPLY and action.args.get("template") == ALTERNATIVES_TEMPLATE
+            for action in self.actions
+        )
 
     def approve(self) -> "Approval":
         return self._moved_to(ApprovalState.APPROVED)

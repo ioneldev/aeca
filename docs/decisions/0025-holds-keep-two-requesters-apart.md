@@ -5,7 +5,7 @@
 **Decision.**
 - A hold is a slot in an approval nobody has answered, or one of the alternatives offered to a requester.
 - Holds are keyed by the email's thread. Other threads see the slot as busy. The thread's own holds count as free for that thread.
-- Holds are released on REJECT, when the approval is superseded, once it is executed, or when the slot starts.
+- Holds are released on REJECT, when the approval is superseded, once it is executed, or when the slot starts. An executed approval that offered alternatives keeps its holds until each slot starts ([0066](0066-offered-alternatives-stay-held.md)).
 - AECA processes one email at a time. A small worker pool goes in only if the rehearsal shows it is too slow. The target is all 20 emails within 5 minutes.
 
 **Why.** Two requesters must never be offered the same slot. The thread's own holds count as free so a reply of "the second slot works" still fits. Holds need a fixed order, which is why emails run one at a time.

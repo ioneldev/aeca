@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from aeca.domain.actions import Action, Verb
+from aeca.domain.approval import ALTERNATIVES_TEMPLATE
 from aeca.domain.decision import Decision
 from aeca.domain.facts import EmailFacts
 from aeca.domain.ids import action_key
@@ -359,7 +360,7 @@ def _keyed(unkeyed: _Unkeyed, *, source_message_id: str, attempt: int | None) ->
 
 
 def _alternatives_args(alternatives: tuple[Interval, ...]) -> dict[str, str]:
-    return {"template": "alternatives", "slots": _slots_json(alternatives)}
+    return {"template": ALTERNATIVES_TEMPLATE, "slots": _slots_json(alternatives)}
 
 
 def _slot_args(slot: Interval) -> dict[str, str]:
