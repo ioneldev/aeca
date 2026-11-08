@@ -178,13 +178,16 @@ class _ModelConversation:
             latency_s=call.latency_s,
         )
 
+    # The text is email content, which the trace never holds; it goes to the debug log, where the
+    # email itself is, and the trace keeps only that there was one.
     def _trace_suspected_injection(self, decision: Decision) -> None:
-        if decision.suspected_injection is not None:
-            self.deps.tracer.event(
-                "suspected_injection",
-                message_id=self.facts.message_id,
-                text=decision.suspected_injection,
-            )
+        text = decision.suspected_injection
+        if text is None:
+            return
+        self.deps.tracer.event(
+            "suspected_injection", message_id=self.facts.message_id, chars=len(text)
+        )
+        self.deps.tracer.debug(f"suspected injection in {self.facts.message_id}:\n{text}")
 
     def _trace_correction(self, correction: _Correction, attempt_index: int) -> None:
         self.deps.tracer.event(

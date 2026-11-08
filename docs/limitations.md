@@ -48,7 +48,7 @@ What AECA doesn't do, and what each costs. The first four are named in the spec 
 
 ## The debug log
 
-- **The debug log holds personal data.** With `DEBUG_LOG=true` it holds each decided email's text as the model sees it, and each raw model reply. Secrets are redacted; email content is not. It is off by default, and files older than `DEBUG_LOG_DAYS` are deleted. An email decided by a rule alone writes nothing to it.
+- **The debug log holds personal data.** With `DEBUG_LOG=true` it holds each decided email's text as the model sees it, each raw model reply, and the text of any suspected injection. Secrets are redacted; email content is not. It is off by default, and files older than `DEBUG_LOG_DAYS` are deleted. An email decided by a rule alone writes nothing to it.
 
 ## Testing
 

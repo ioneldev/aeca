@@ -2,7 +2,7 @@
 
 The short map. The reasoning is in [DESIGN.md](../DESIGN.md) and the [decision records](decisions/README.md).
 
-**Status:** Built and run: the inbox loop, the decision, the policy and planner, the approval loop, the journal, startup checks, the cost cap, incident alerts, the corpus, `make eval`, `make seed-calendar`, `make rehearse`, the health check, the copy lock, graceful stop, `make reset-test` and the debug log (`application/decide.py` writes the email as the model sees it and each raw reply).
+**Status:** Built and run: the inbox loop, the decision, the policy and planner, the approval loop, the journal, startup checks, the cost cap, incident alerts, the corpus, `make eval`, `make seed-calendar`, `make rehearse`, the health check, the copy lock, graceful stop, `make reset-test` and the debug log (`application/decide.py` writes the email as the model sees it, each raw reply, and the text of a suspected injection).
 
 ## Layers
 
