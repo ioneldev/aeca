@@ -76,12 +76,9 @@ def answer_of(raw: RawEmail) -> Answer:
     return parse_answer(text)
 
 
-def counts_as_answer(message: EmailFacts, rules: AnswerRules) -> bool:
-    """The caller has already checked that the message is in the request's thread."""
-    return why_not_an_answer(message, rules) is None
-
-
 def why_not_an_answer(message: EmailFacts, rules: AnswerRules) -> str | None:
+    """None when the message counts as the manager's answer. The caller has already checked that
+    it is in the request's thread."""
     if message.aeca_kind is not None or message.aeca_id is not None:
         return CARRIES_AECA_HEADERS
     # SENT is a label only the account can give, and whoever holds the account is the manager.

@@ -14,11 +14,11 @@ from fakes.recording_approvals import RecordingApprovalOpener
 from fakes.recording_tracer import RecordingTracer
 from fakes.scripted_model import response_with_text
 from support.decisions import decision_of
+from support.deferred_approval import DeferredApprovalOpener
 from support.emails import make_raw
 
 from aeca.adapters.sqlite_state import SqliteState
 from aeca.application.budget import Budget
-from aeca.application.deferred_approval import DeferredApprovalOpener
 from aeca.application.executor import Executor, ExecutorDeps
 from aeca.application.ports import ApprovalOpener
 from aeca.application.process_email import InboxDeps, InboxProcessor, InboxSettings

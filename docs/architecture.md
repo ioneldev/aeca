@@ -18,7 +18,7 @@ Ports and adapters. Each layer is a folder under `src/aeca/`, and `tests/test_ar
 
 **Domain** (`src/aeca/domain/`): `email`, `facts`, `auth_results`, `links`, `text`, `rules`, `decision`, `validation`, `labels`, `policy`, `actions`, `planner`, `time_range`, `calendar_event` (the event as the planner and reset-test read it), `meeting_outcome`, `approval`, `answers`, `approval_messages`, `replies`, `compose`, `templates`, `outgoing`, `journal`, `ids`, `audit`, `errors`, `secret`, `lease` (who holds the inbox), `rehearsal_mail` and `reset_lock` (what reset-test may touch, and when it must refuse).
 
-**Application** (`src/aeca/application/`): `service` (the tick), `process_email` (one email), `decide`, `decision_prompt` and `prompts/`, `meetings`, `executor`, `approvals`, `deferred_approval`, `watch`, `startup`, `copy_lock`, `budget`, `incidents`, `failures`, `ports` and `state_ports`.
+**Application** (`src/aeca/application/`): `service` (the tick), `process_email` (one email), `decide`, `decision_prompt` and `prompts/`, `meetings`, `executor`, `approvals`, `watch`, `startup`, `copy_lock`, `budget`, `incidents`, `failures`, `ports` and `state_ports`.
 
 **Ports:** `Clock`, `Tracer`, `LLMClient`, `Mailbox`, `Calendar`, `ApprovalOpener`, `StateStore`, `AuditLog`, `IncidentReporter`, `SpendLedger`, `Lease`.
 

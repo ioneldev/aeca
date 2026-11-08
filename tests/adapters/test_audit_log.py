@@ -7,10 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
-
 from aeca.adapters.audit_log import JsonlAuditLog
-from aeca.adapters.json_log import summary
 from aeca.adapters.rotating_log import Rotation
 from aeca.domain.audit import AuditLine
 from aeca.domain.secret import SecretStr
@@ -108,33 +105,6 @@ def test_the_audit_rotates_keeping_five_files(tmp_path: Path) -> None:
     assert len(list(tmp_path.glob("audit.jsonl*"))) == 6
 
 
-def summary_of(**overrides: object) -> dict[str, object]:
-    return json.loads(summary(line_of(**overrides)))  # type: ignore[no-any-return]
-
-
-def test_summary_is_one_json_object_with_the_facts_the_operator_scans() -> None:
-    text = summary(line_of(subject="Line one\nline two", approval_id="appr-m1"))
-
-    assert "\n" not in text
-    assert json.loads(text) == {
-        "time": "2026-11-09T12:00:00+00:00",
-        "outcome": "done",
-        "label": "TASK",
-        "message_id": "m1",
-        "subject": "Line one line two",
-        "approval_id": "appr-m1",
-    }
-
-
-def test_summary_has_a_null_approval_id_when_there_is_none() -> None:
-    assert summary_of()["approval_id"] is None
-
-
-@pytest.mark.parametrize("outcome", ["done", "awaiting_approval", "failed", "skipped"])
-def test_summary_names_every_outcome(outcome: str) -> None:
-    assert summary_of(outcome=outcome)["outcome"] == outcome
-
-
 def test_a_unicode_line_separator_in_a_subject_cannot_split_an_audit_line(tmp_path: Path) -> None:
     audit = audit_in(tmp_path)
 
@@ -142,20 +112,6 @@ def test_a_unicode_line_separator_in_a_subject_cannot_split_an_audit_line(tmp_pa
     audit.write(line_of(message_id="m2"))
 
     assert len((tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()) == 2
-
-
-def test_a_unicode_line_separator_in_a_subject_cannot_split_a_summary() -> None:
-    text = summary(line_of(subject="a" + chr(0x2028) + "b" + chr(0x85) + "c"))
-
-    assert len(text.splitlines()) == 1
-    assert text.isascii()
-
-
-def test_summary_strips_terminal_escapes_and_bounds_the_subject() -> None:
-    text = summary(line_of(subject="\x1b[31mred\x1b[0m" + "x" * 500))
-
-    assert "\x1b" not in text
-    assert len(str(json.loads(text)["subject"])) <= 200
 
 
 def test_audit_files_are_readable_by_their_owner_only(tmp_path: Path) -> None:
