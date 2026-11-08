@@ -81,7 +81,7 @@ Why the order: [0031](decisions/0031-every-action-goes-through-one-journal.md), 
 
 ## The service loop, the lock and health
 
-`aeca run` sets a stop event on SIGTERM and SIGINT. `Service.run` starts up (`startup`: the checks, then `CopyLock.acquire`, then the resume of unfinished actions), then ticks until the event is set. A tick first calls `ensure_held`, and again before each email and before it records the poll. A lost lock raises `LockLost`, which is not a system-wide error, so the run ends with exit 1.
+`aeca run` sets a stop event on SIGTERM and SIGINT. `Service.run` starts up (`startup`: the checks, then `CopyLock.acquire`, then each action left `executing` is resolved by its key; `pending` ones wait for the tick's ordered resumes), then ticks until the event is set. A tick first calls `ensure_held`, and again before each email and before it records the poll. A lost lock raises `LockLost`, which is not a system-wide error, so the run ends with exit 1.
 
 `domain/lease.py` holds the rule: a heartbeat is fresh for 3 × `POLL_SECONDS`, and one dated further ahead than that is not fresh either. `adapters/gmail_lease.py` stores the lock as the draft `AECA lock`, found with `drafts.list`, with the lowest draft id as the lock. `application/copy_lock.py` renews it on each poll, and between emails once a poll's time has passed. Each renewal also writes the heartbeat file that `aeca health` reads. The copy id comes from `copy-id` in the data directory ([0065](decisions/0065-the-copy-id-is-persisted-in-the-data-dir.md)).
 

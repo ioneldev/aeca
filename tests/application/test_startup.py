@@ -29,7 +29,7 @@ from aeca.application.startup import (
     ResumerDeps,
     StartupDeps,
     StartUpWork,
-    resume_unfinished,
+    resolve_executing,
     start_up,
     startup_checks,
 )
@@ -38,7 +38,7 @@ from aeca.domain.approval import Approval, ApprovalState
 from aeca.domain.errors import AecaError, ConfigError, SystemWideError
 from aeca.domain.facts import FactSettings
 from aeca.domain.journal import JournalEntry
-from aeca.domain.labels import PROCESSED
+from aeca.domain.labels import PROCESSED, STARRED
 
 ACCOUNT = "aeca@gmail.com"
 MODEL = "claude-opus-5-5"
@@ -278,7 +278,9 @@ def test_executing_actions_are_resolved_before_the_first_poll(rig: Rig) -> None:
     assert rig.mailbox.added_labels("m1") == ["TASK"]
 
 
-def test_resume_unfinished_runs_every_pending_and_executing_action_once(rig: Rig) -> None:
+def test_resolve_executing_runs_each_executing_action_once_and_leaves_pending_ones(
+    rig: Rig,
+) -> None:
     rig.mailbox.add(make_raw(message_id="m1", thread_id="t1", sender="client@example.com"))
     pending = Action(Verb.APPLY_LABEL, key="k-pending", args={"label": "TASK"})
     starred = Action(Verb.STAR, key="k-star", args={})
@@ -287,10 +289,12 @@ def test_resume_unfinished_runs_every_pending_and_executing_action_once(rig: Rig
     )
     rig.store.action_update(starred.key, ActionStatus.EXECUTING)
 
-    resumed = resume_unfinished(rig.resumer, rig.store)
+    resolved = resolve_executing(rig.resumer, rig.store)
 
-    assert resumed == 2
-    assert resume_unfinished(rig.resumer, rig.store) == 0
+    assert resolved == 1
+    assert resolve_executing(rig.resumer, rig.store) == 0
+    assert (_status(rig, starred), _status(rig, pending)) == ("done", "pending")
+    assert rig.mailbox.added_labels("m1") == [STARRED]
     assert PROCESSED not in rig.mailbox.labels_of("m1")
 
 
@@ -304,10 +308,12 @@ def test_an_action_whose_email_is_gone_is_traced_and_the_others_still_run(rig: R
     rig.store.journal_record(
         JournalEntry(source_message_id="m2", decision_json="{}", actions=(kept,))
     )
+    rig.store.action_update(lost.key, ActionStatus.EXECUTING)
+    rig.store.action_update(kept.key, ActionStatus.EXECUTING)
 
-    resumed = resume_unfinished(rig.resumer, rig.store)
+    resolved = resolve_executing(rig.resumer, rig.store)
 
-    assert resumed == 1
+    assert resolved == 1
     assert [event.kind for event in rig.tracer.events] == ["resume_failed"]
     assert _status(rig, kept) == ActionStatus.DONE.value
 
@@ -329,7 +335,7 @@ def _status(rig: Rig, action: Action) -> str:
     return record.status.value
 
 
-def test_resume_unfinished_skips_the_actions_of_an_approval_that_is_not_approved(rig: Rig) -> None:
+def test_resolve_executing_skips_the_actions_of_an_approval_that_is_not_approved(rig: Rig) -> None:
     rig.mailbox.add(make_raw(message_id="m1", thread_id="t1", sender="client@example.com"))
     gated = Action(Verb.STAR, key="k-gated", args={})
     rig.store.approval_save(
@@ -345,9 +351,10 @@ def test_resume_unfinished_skips_the_actions_of_an_approval_that_is_not_approved
             holds=(),
         )
     )
+    rig.store.action_update(gated.key, ActionStatus.EXECUTING)
 
-    assert resume_unfinished(rig.resumer, rig.store) == 0
-    assert _status(rig, gated) == ActionStatus.PENDING.value
+    assert resolve_executing(rig.resumer, rig.store) == 0
+    assert _status(rig, gated) == ActionStatus.EXECUTING.value
     assert rig.mailbox.modify_log == []
 
 

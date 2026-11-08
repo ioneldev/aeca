@@ -26,7 +26,7 @@ from support.emails import make_raw
 from support.inbox_rig import ACCOUNT, BUCHAREST
 
 from aeca.application.ports import OpenApproval
-from aeca.domain.actions import ActionStatus, Verb
+from aeca.domain.actions import Action, ActionStatus, Verb
 from aeca.domain.approval import ApprovalState
 from aeca.domain.audit import AuditLine
 from aeca.domain.calendar_event import CalendarEvent
@@ -34,7 +34,7 @@ from aeca.domain.email import RawEmail
 from aeca.domain.errors import EmailError, SystemWideError
 from aeca.domain.facts import extract_facts
 from aeca.domain.ids import approval_id, event_id
-from aeca.domain.labels import AWAITING, PROCESSED, Label
+from aeca.domain.labels import AWAITING, PROCESSED, SENT, Label, ReplyKind
 from aeca.domain.policy import alternatives_reply
 from aeca.domain.time_range import Interval
 
@@ -591,6 +591,128 @@ def test_a_system_wide_error_while_executing_charges_no_try(rig: ApprovalRig) ->
         with pytest.raises(SystemWideError):
             rig.service.process_all()
     rig.service.process_all()
+
+    assert_executed_once(rig)
+
+
+# --- a restart through production's start-up (spec §4.5, §4.6; final review I1) ---
+
+
+def status_of(rig: ApprovalRig, action: Action) -> ActionStatus:
+    record = rig.store.action_get(action.key)
+    assert record is not None, f"{action.key} was never recorded"
+    return record.status
+
+
+def leave_approved_with_nothing_run(rig: ApprovalRig, cause: str) -> None:
+    """The manager approved, and execution stopped before the event: by a Calendar outage, which
+    ends the tick, or by a kill right after the answer was marked read."""
+    opened(rig)
+    rig.answer("APPROVE")
+    if cause == "outage":
+        outage = SystemWideError("Calendar answered 503", next_action="wait")
+        rig.calendar.insert_failures.append(outage)
+        with pytest.raises(SystemWideError):
+            rig.service.process_all()
+    else:
+        rig.mailbox.kill_after_entry = f"modify:{PROCESSED}"
+        with pytest.raises(Killed):
+            rig.service.process_all()
+
+
+@pytest.mark.parametrize("cause", ["outage", "kill"])
+def test_a_restart_sends_no_confirmation_when_the_event_then_fails_for_this_email(
+    rig: ApprovalRig, cause: str
+) -> None:
+    leave_approved_with_nothing_run(rig, cause)
+    rig.calendar.insert_failures.append(
+        EmailError("Google rejected the event (HTTP 400)", next_action="x")
+    )
+
+    rig.restart_through_start_up()
+    rig.tick()
+
+    [create_event, confirmation] = rig.approval().actions
+    assert rig.calendar.inserted == []
+    assert "confirmation" not in rig.kinds_sent()
+    assert status_of(rig, create_event) is ActionStatus.FAILED
+    assert status_of(rig, confirmation) is ActionStatus.PENDING
+    assert rig.approval().state is ApprovalState.APPROVED
+
+
+def test_start_up_resolves_an_event_left_executing_and_the_next_tick_confirms_once(
+    rig: ApprovalRig,
+) -> None:
+    opened(rig)
+    rig.answer("APPROVE")
+    kill_during_approval(rig, "insert")
+    [create_event, confirmation] = rig.approval().actions
+    rig.store.action_update(create_event.key, ActionStatus.EXECUTING)
+
+    rig.restart_through_start_up()
+    after_start_up = (status_of(rig, create_event), status_of(rig, confirmation))
+    rig.tick()
+
+    assert after_start_up == (ActionStatus.DONE, ActionStatus.PENDING)
+    assert_executed_once(rig)
+
+
+def test_start_up_resolves_a_confirmation_left_executing_whose_draft_was_sent(
+    rig: ApprovalRig,
+) -> None:
+    opened(rig)
+    rig.answer("APPROVE")
+    kill_during_approval(rig, "send:confirmation")
+    [_create_event, confirmation] = rig.approval().actions
+    left = status_of(rig, confirmation)
+
+    rig.restart_through_start_up()
+
+    assert left is ActionStatus.EXECUTING
+    assert status_of(rig, confirmation) is ActionStatus.DONE
+    sent_in_thread = [
+        summary.aeca_kind
+        for summary in rig.mailbox.thread_summaries(SOURCE_THREAD)
+        if SENT in summary.label_ids
+    ]
+    assert sent_in_thread == ["confirmation"]
+    assert rig.kinds_sent().count("confirmation") == 1
+
+
+def test_an_emails_pending_acknowledgement_waits_for_the_journal_resume(
+    rig: ApprovalRig,
+) -> None:
+    rig.inbox.next_decision = decision_of(Label.TASK, reply=ReplyKind.ACKNOWLEDGEMENT)
+    rig.inbox.receive(sender=COLLEAGUE, message_id="m-task", thread_id="t-task")
+    rig.mailbox.kill_after_entry = "modify:TASK"
+    with pytest.raises(Killed):
+        rig.tick()
+    writes_before_the_restart = len(rig.journal)
+
+    rig.restart_through_start_up()
+    sent_at_start_up = rig.kinds_sent()
+    rig.tick()
+
+    assert sent_at_start_up == []
+    assert rig.kinds_sent() == ["acknowledgement"]
+    assert rig.journal[writes_before_the_restart:][:3] == [
+        "modify:TASK",
+        "draft:acknowledgement",
+        "send:acknowledgement",
+    ]
+
+
+@pytest.mark.parametrize("kill", APPROVE_FLOW_KILLS)
+def test_a_kill_while_executing_then_a_restart_through_start_up_executes_once(
+    rig: ApprovalRig, kill: str
+) -> None:
+    opened(rig)
+    rig.answer("APPROVE")
+    kill_during_approval(rig, kill)
+
+    rig.restart_through_start_up()
+    rig.tick()
+    rig.tick()
 
     assert_executed_once(rig)
 
