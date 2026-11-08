@@ -1,3 +1,4 @@
+import statistics
 import time
 
 from aeca.domain.text import bounded, html_to_text, html_to_text_with_quotes, visible
@@ -98,11 +99,13 @@ def test_without_a_blockquote_it_reads_as_html_to_text():
 # Review minor: the reducer must stay linear. Measured by how the time grows from N to 4N pieces on
 # one line, not by a wall-clock bound, so a loaded machine cannot fail it: linear growth gives about
 # 4, the quadratic reducer it replaced about 12 at this size (measured). Both runs together take
-# about a quarter of a second.
+# about a quarter of a second. One preempted run can still push a single ratio past the limit (8.06
+# in 1 of 8 measured, with Docker busy), so the test takes the median of several.
 
 PIECE = "<b>" + "w" * 100 + "</b> "
 PIECES = 6_000
 LINEAR_GROWTH_LIMIT = 8.0
+GROWTH_SAMPLES = 5
 
 
 def best_time_to_reduce(html: str) -> float:
@@ -118,8 +121,12 @@ def growth_from_n_to_4n() -> float:
     return best_time_to_reduce(PIECE * (4 * PIECES)) / best_time_to_reduce(PIECE * PIECES)
 
 
+def median_growth_from_n_to_4n() -> float:
+    return statistics.median(growth_from_n_to_4n() for _ in range(GROWTH_SAMPLES))
+
+
 def test_a_large_html_body_reduces_in_linear_time():
-    growth = growth_from_n_to_4n()
+    growth = median_growth_from_n_to_4n()
 
     assert growth < LINEAR_GROWTH_LIMIT, f"the time grew {growth:.1f}x from N to 4N pieces"
 
