@@ -121,7 +121,7 @@ AECA needs no answers from you. Three settings are yours to choose, and what it 
 **`TIMEZONE`.** AECA uses the calendar's own time zone, and states the zone in every approval and confirmation. Set `TIMEZONE` to override it.
 
 **What AECA assumes for the rest:**
-- **Where the 20 emails come from** doesn't matter: several mailboxes, one, or the AECA account itself.
+- **Where the 20 emails come from:** several mailboxes, one, or the AECA account itself. Labels, approvals and meetings work the same from any of them. One difference: AECA sends no automatic reply (an acknowledgement, a thank-you or a decline) to the account itself, so an email sent from the AECA account gets its label and no such reply ([DESIGN.md](DESIGN.md), defence 3). Send from another mailbox to see those replies.
 - **How the calendar is filled** doesn't matter: events created directly and real invitations both work. An email whose invitation is already on the calendar gets its label and no action.
 - **Language:** English only.
 - **Attachments:** their names and types are read, not their contents.
