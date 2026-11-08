@@ -46,6 +46,10 @@ What AECA doesn't do, and what each costs. The first four are named in the spec 
 - **The urgent window of two working days is a guess, tuned with `make eval`** (spec §4.2, [0019](decisions/0019-what-counts-as-urgent.md)).
 - **Cost.** About half a cent per call with a warm cache, about 2 cents after a quiet spell. The cap is `MAX_USD_PER_DAY` ([0002](decisions/0002-first-live-run.md)).
 
+## The trace
+
+- **Google calls aren't traced one by one,** a departure from spec §4.8, which asks for every Google call and retry in `trace.jsonl`. A failed Google call shows on the console (`make logs`), as the error in its email's audit line, and, when it fails every email, in the console's back-off event.
+
 ## The debug log
 
 - **The debug log holds personal data.** With `DEBUG_LOG=true` it holds each decided email's text as the model sees it, each raw model reply, and the text of any suspected injection. Secrets are redacted; email content is not. It is off by default, and files older than `DEBUG_LOG_DAYS` are deleted. An email decided by a rule alone writes nothing to it.

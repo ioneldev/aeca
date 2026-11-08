@@ -95,7 +95,7 @@ Why the order: [0031](decisions/0031-every-action-goes-through-one-journal.md), 
 |---|---|---|
 | `state.db` | `/data` volume | Approvals, holds, the journal, spend, incidents |
 | `audit.jsonl` | `/data` volume | One line per email and per approval outcome |
-| `trace.jsonl` | `/data` volume | Every step, model call, Google call and retry |
+| `trace.jsonl` | `/data` volume | Model calls (tokens, cost, latency), model retries, corrections and refusals, suspected injections by length, approval requests, resumed emails, and each failure of an action, email, approval, alert or resume. Not each Google call ([limitations](limitations.md)) |
 | `heartbeat` | `/data` volume | The time of the last successful poll, for `aeca health` |
 | `copy-id` | `/data` volume | This installation's id for the copy lock |
 | `debug-YYYY-MM-DD.log` | `/data` volume | With `DEBUG_LOG=true`; rotated, and kept `DEBUG_LOG_DAYS` days. Holds email text and raw model replies |
