@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # astral-sh/setup-uv v10.3.3, pinned to the commit its tag points at
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+      - run: uv sync --frozen
+      - run: make check
+      - run: docker build .
+      # Proves no key sits in an image layer. It needs Docker and no secrets.
+      - run: uv run pytest -m live tests/test_container.py -q
+      # The project itself is not on PyPI, so only its locked dependencies are audited. The lock
+      # already fixes every version, so the audit resolves nothing. The tool itself is pinned too.
+      - name: Audit the locked dependencies
+        run: |
+          uv export --frozen --no-hashes --no-emit-project --format requirements-txt > requirements.txt
+          uvx pip-audit==2.9.0 -r requirements.txt --no-deps --disable-pip

@@ -1,0 +1,60 @@
+[project]
+name = "aeca"
+version = "0.1.0"
+description = "Agentic Email & Calendar Assistant: labels each new email in one Gmail inbox and acts on it."
+authors = [
+    { name = "Ionel Cîmpan", email = "ionel.cimpan@protonmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.6.0",
+    "google-api-python-client>=2.201.0",
+    "google-auth>=2.62.1",
+    "google-auth-oauthlib>=1.5.0",
+    "pydantic>=2.14.3",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+aeca = "aeca.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.27,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+# docs/superpowers holds the design and plan, whose Python blocks are pseudo-code: ruff format
+# also rewrites code blocks inside Markdown, which would silently edit those approved documents.
+extend-exclude = ["docs/research", "docs/superpowers"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["googleapiclient.*", "google_auth_oauthlib.*", "google_auth_httplib2", "httplib2.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# tests/ on the path lets a test in any folder import the shared helpers.
+pythonpath = ["tests"]
+# pytester runs the key guard's own proof. strict-markers stops a misspelt marker running a
+# paid or networked test in make check.
+addopts = ["--strict-markers", "-p", "pytester"]
+markers = [
+    "live: touches the network (Gmail, Calendar) and needs real credentials",
+    "eval: calls the Anthropic API and costs money",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+    "types-pyyaml>=6.0.12.20261103",
+]

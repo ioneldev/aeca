@@ -1,0 +1,38 @@
+# Both services run one image, built from this folder: make image builds it, and make auth builds
+# it when it is missing.
+services:
+  aeca:
+    build: .
+    image: aeca:local
+    # Passes docker stop's SIGTERM on to AECA, so it can finish the email it is on.
+    init: true
+    # The secrets arrive at run time only, and never in the image.
+    env_file: [.env]
+    volumes:
+      - aeca-data:/data
+    mem_limit: 512m
+    restart: unless-stopped
+    # Long enough for the worst email in hand: three model calls and the Google calls after them.
+    stop_grace_period: 120s
+    # Only the proxy settings the host sets reach the container. An unset one arrives empty, which
+    # AECA reads as unset.
+    environment:
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      EXTRA_CA_CERTS: ${EXTRA_CA_CERTS:-}
+
+  # make auth: the one-time Google consent. It writes the refresh token into .env, so .env is
+  # mounted writable, and only for this service.
+  auth:
+    profiles: [tools]
+    image: aeca:local
+    env_file: [.env]
+    volumes:
+      - ./.env:/work/.env
+    # Loopback on the host only: the consent redirect comes back to localhost:8765, and the
+    # container listens on every interface so Docker can forward it.
+    ports:
+      - "127.0.0.1:8765:8765"
+    command: ["auth", "--env-file", "/work/.env", "--bind", "0.0.0.0", "--port", "8765"]
+
+volumes:
+  aeca-data: {}
